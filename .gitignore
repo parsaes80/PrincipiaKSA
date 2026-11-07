@@ -1,0 +1,16 @@
+# Zig's output (the mod folder, the zip) and cache.
+/zig-out/
+/.zig-cache/
+
+# Never published: decompiled game code (the developers' copyright) and
+# other local material.
+/private/
+
+# IDEs and .NET
+bin/
+obj/
+*.user
+.vs/
+.idea/
+.vscode/
+*.log

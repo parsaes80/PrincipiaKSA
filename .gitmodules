@@ -1,0 +1,27 @@
+[submodule "extern/Principia"]
+	path = extern/Principia
+	url = https://github.com/mockingbirdnest/Principia.git
+[submodule "extern/abseil-cpp"]
+	path = extern/abseil-cpp
+	url = https://github.com/mockingbirdnest/abseil-cpp.git
+[submodule "extern/protobuf"]
+	path = extern/protobuf
+	url = https://github.com/mockingbirdnest/protobuf.git
+[submodule "extern/re2"]
+	path = extern/re2
+	url = https://github.com/mockingbirdnest/re2.git
+[submodule "extern/gipfeli"]
+	path = extern/gipfeli
+	url = https://github.com/mockingbirdnest/gipfeli.git
+[submodule "extern/core-math"]
+	path = extern/core-math
+	url = https://github.com/mockingbirdnest/core-math.git
+[submodule "extern/zfp"]
+	path = extern/zfp
+	url = https://github.com/mockingbirdnest/zfp.git
+[submodule "extern/config"]
+	path = extern/config
+	url = https://github.com/mockingbirdnest/config.git
+[submodule "extern/multiprecision"]
+	path = extern/multiprecision
+	url = https://github.com/mockingbirdnest/multiprecision.git

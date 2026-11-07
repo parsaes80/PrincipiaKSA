@@ -1,0 +1,6 @@
+{
+  global:
+    principia_ksa__*;
+  local:
+    *;
+};

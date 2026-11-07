@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>PrincipiaKSA</AssemblyName>
+    <RootNamespace>PrincipiaKSA</RootNamespace>
+    <!-- Don't copy NuGet dependencies into bin: StarMap/KSA provide them. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- No paths of the machine it was built on in the DLL (its debug
+         symbols' path) or the symbols (source files, Source Link): the
+         repository is /_/ there, as in a reproducible CI build. -->
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- KSA's and StarMap's assemblies, to compile against: zig build passes
+       them (-Dksa, -Dstarmap); these defaults are for building alone. -->
+  <PropertyGroup>
+    <KsaDir Condition="'$(KsaDir)' == ''">$(KSA_DIR)</KsaDir>
+    <KsaDir Condition="'$(KsaDir)' == ''">$(HOME)/Games/Ahwoo/Kitten Space Agency</KsaDir>
+    <StarMapDir Condition="'$(StarMapDir)' == ''">$(HOME)/.local/share/Borea/Loaders/StarMap/0.4.8</StarMapDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false: compile against these, but don't ship them. -->
+    <Reference Include="KSA" HintPath="$(KsaDir)/KSA.dll" Private="false" />
+    <Reference Include="Brutal.Numerics" HintPath="$(KsaDir)/Brutal.Numerics.dll" Private="false" />
+    <!-- KSA's public API mentions Bepu types (e.g. in Double3Ex overloads). -->
+    <Reference Include="BepuUtilities" HintPath="$(KsaDir)/BepuUtilities.dll" Private="false" />
+    <!-- ImGui, for the map overlay and the settings window. -->
+    <Reference Include="Brutal.ImGui" HintPath="$(KsaDir)/Brutal.ImGui.dll" Private="false" />
+    <Reference Include="Brutal.ImGui.Abstractions" HintPath="$(KsaDir)/Brutal.ImGui.Abstractions.dll" Private="false" />
+    <Reference Include="Brutal.Strings" HintPath="$(KsaDir)/Brutal.Strings.dll" Private="false" />
+    <!-- KeyHash (vehicle ids) lives here. -->
+    <Reference Include="Planet.Render.Core" HintPath="$(KsaDir)/Planet.Render.Core.dll" Private="false" />
+    <Reference Include="StarMap.API" HintPath="$(StarMapDir)/StarMap.API.dll" Private="false" />
+    <!-- Must match the 0Harmony.dll that StarMap ships (2.4.2 in StarMap 0.4.8). -->
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="mod.toml" CopyToOutputDirectory="Always" />
+  </ItemGroup>
+
+</Project>
