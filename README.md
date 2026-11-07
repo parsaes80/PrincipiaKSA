@@ -4,6 +4,8 @@ This mod replaces the game's simplified gravity model
 and replaces it with N-body simulation. Such a mod called Principia(https://github.com/mockingbirdnest/Principia) existed for KSP and now repo has 
 ported it to KSA. N-body gravity offers much more depth to game and is very fun for people who have mastered the games own physics.
 
+<img width="2265" height="1262" alt="Image" src="https://github.com/user-attachments/assets/27c48cb4-4580-4553-bd64-bb0cc15a01af" />
+
 ## What it does
 
 - **Planets and moons**: move under Principia's n-body integration phsyics. They are no longer on Kepler's rails and move more accurattly to real-life.
@@ -56,8 +58,7 @@ The same package runs on Linux and Windows (x64).
 
 - [Zig](https://ziglang.org) 0.17. It is the only C/C++ toolchain: it builds
   both platforms' native libraries on either platform (clang 22, libc++,
-  glibc 2.28 for Linux, MinGW-w64 for Windows). No CMake, MSVC or Visual
-  Studio.
+  glibc 2.28 for Linux, MinGW-w64 for Windows). No CMake(I HATE CMAKE), MSVC or Visual Studio.
 - .NET 10 SDK, for the C# part of the mod.
 
 ## Build
