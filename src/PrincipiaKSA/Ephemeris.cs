@@ -113,25 +113,48 @@ internal sealed class Ephemeris : IDisposable
         return final;
     }
 
-    // Predicts a massless body from t0 towards tEnd, optionally under thrust
-    // along a fixed direction: points on the absolute grid of `sampleInterval`,
-    // and the exact apsides relative to `apsisBodies`.
-    public unsafe (int Count, PredictionEnd End, int ApsisCount) Predict(
-        in QP initial, double t0, double tEnd, int maxSteps, double3 direction, double thrust,
-        double initialMass, double massFlow, double sampleInterval, Span<double> times, Span<QP> states,
-        ReadOnlySpan<int> apsisBodies, Span<Apsis> apsides)
+    // How closely a prediction's points follow its path: every integrator
+    // step, thinned to those a cubic Hermite spline needs to stay within this
+    // (m), as Principia keeps vessel histories.
+    public const double DownsamplingTolerance = 10;
+
+    // At most this many apsides per prediction, in all.
+    private const int ApsisCapacity = 100_000;
+
+    // A prediction: its points, the exact apsides relative to the bodies
+    // asked for, the integrator steps it took, and why it stopped.
+    public readonly record struct PredictionResult(double[] Times, QP[] States, Apsis[] Apsides, long Steps,
+                                             PredictionEnd End);
+
+    // Predicts a massless body from t0 as Principia predicts a vessel, with
+    // its adaptive integrator at `tolerance` (m, and m/s), until it has taken
+    // `maxSteps` steps, reached tEnd (+∞: no time limit) or hit a body;
+    // optionally under thrust along a fixed direction (tEnd finite then).
+    public unsafe PredictionResult Predict(in QP initial, double t0, double tEnd, long maxSteps, double tolerance,
+                                     double3 direction, double thrust, double initialMass, double massFlow,
+                                     ReadOnlySpan<int> apsisBodies)
     {
-        fixed (double* t = times)
-        fixed (QP* s = states)
-        fixed (int* b = apsisBodies)
-        fixed (Apsis* a = apsides)
+        fixed (int* bodies = apsisBodies)
         {
-            Native.Check(Native.PredictMasslessDetailed(Handle, in initial, t0, tEnd, maxSteps, new XYZ(direction),
-                                                        thrust, initialMass, massFlow, sampleInterval, t, s,
-                                                        Math.Min(times.Length, states.Length), out int count,
-                                                        b, apsisBodies.Length, a, apsides.Length,
-                                                        out int apsisCount, out PredictionEnd end));
-            return (count, end, apsisCount);
+            Status status = Native.Predict(Handle, in initial, t0, tEnd, maxSteps, tolerance, tolerance,
+                                           new XYZ(direction), thrust, initialMass, massFlow,
+                                           DownsamplingTolerance, bodies, apsisBodies.Length, ApsisCapacity,
+                                           out double* times, out QP* states, out int count,
+                                           out Apsis* apsides, out int apsisCount, out long steps,
+                                           out PredictionEnd end);
+            try
+            {
+                Native.Check(status);
+                return new PredictionResult(new ReadOnlySpan<double>(times, count).ToArray(),
+                                      new ReadOnlySpan<QP>(states, count).ToArray(),
+                                      new ReadOnlySpan<Apsis>(apsides, apsisCount).ToArray(), steps, end);
+            }
+            finally
+            {
+                Native.Free(times);
+                Native.Free(states);
+                Native.Free(apsides);
+            }
         }
     }
 

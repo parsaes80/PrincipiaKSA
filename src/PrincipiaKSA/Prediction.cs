@@ -101,6 +101,7 @@ internal sealed class Prediction
     public required (int Start, int End)[] BurnArcs { get; init; }  // Point ranges under thrust.
     public required int FirstIgnition { get; init; }       // Index; 0 for a prediction.
     public required PredictionEnd End { get; init; }
+    public required long Steps { get; init; }              // Integrator steps taken.
     public required bool Impact { get; init; }
     public required List<Marker> Markers { get; init; }
     public required double ComputeMs { get; init; }
@@ -158,7 +159,7 @@ internal sealed record NodeTrack(double Start, double[] Times, double3[] FrameCo
 internal sealed record NodeTracks(Vehicle Vehicle, FrameSpec Frame, IReadOnlyDictionary<Burn, NodeTrack> ByBurn,
                                   IReadOnlyDictionary<Burn, double> Windows)
 {
-    // Each track once (nodes between two burns share one).
+    // Each track once (each node has its own, computed in parallel).
     public IReadOnlyList<NodeTrack> Distinct { get; } =
         ByBurn.Values.Distinct(ReferenceEqualityComparer.Instance).Cast<NodeTrack>().ToArray();
 }

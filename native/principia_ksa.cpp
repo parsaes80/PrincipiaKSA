@@ -2,8 +2,11 @@
 
 #include "principia_ksa.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -742,40 +745,49 @@ principia_ksa_Status principia_ksa__FlowMassless(
   PRINCIPIA_KSA_CATCH
 }
 
-principia_ksa_Status principia_ksa__PredictMasslessDetailed(
+principia_ksa_Status principia_ksa__Predict(
     principia_ksa_Ephemeris const* const ephemeris,
     principia_ksa_QP const* const initial,
     double const t0,
     double const t_end,
-    int const max_steps,
+    std::int64_t const max_steps,
+    double const length_tolerance,
+    double const speed_tolerance,
     principia_ksa_XYZ const thrust_direction,
     double const thrust,
     double const initial_mass,
     double const mass_flow,
-    double const sample_interval,
-    double* const times,
-    principia_ksa_QP* const states,
-    int const capacity,
-    int* const count,
+    double const downsampling_tolerance,
     int const* const apsis_bodies,
     int const apsis_body_count,
-    principia_ksa_Apsis* const apsides,
     int const apsis_capacity,
+    double** const times,
+    principia_ksa_QP** const states,
+    int* const count,
+    principia_ksa_Apsis** const apsides,
     int* const apsis_count,
+    std::int64_t* const steps,
     principia_ksa_PredictionEnd* const end) {
   PRINCIPIA_KSA_TRY
   if (ephemeris == nullptr || initial == nullptr || times == nullptr ||
-      states == nullptr || count == nullptr || end == nullptr ||
-      apsis_count == nullptr ||
-      (apsis_body_count > 0 && (apsis_bodies == nullptr || apsides == nullptr))) {
+      states == nullptr || count == nullptr || apsides == nullptr ||
+      apsis_count == nullptr || steps == nullptr || end == nullptr ||
+      (apsis_body_count > 0 && apsis_bodies == nullptr)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "null argument");
   }
+  *times = nullptr;
+  *states = nullptr;
+  *apsides = nullptr;
   *count = 0;
   *apsis_count = 0;
-  if (capacity < 2 || max_steps < 1 || apsis_body_count < 0 ||
-      apsis_capacity < 0 || !Finite(sample_interval) || !(sample_interval > 0)) {
+  *steps = 0;
+  if (max_steps < 1 || apsis_body_count < 0 || apsis_capacity < 0 ||
+      !Finite(length_tolerance) || !(length_tolerance > 0) ||
+      !Finite(speed_tolerance) || !(speed_tolerance > 0) ||
+      !Finite(downsampling_tolerance) || downsampling_tolerance < 0) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT,
-                "need capacity ≥ 2, max_steps ≥ 1, sample interval > 0");
+                "need max_steps ≥ 1, tolerances > 0, a downsampling "
+                "tolerance ≥ 0");
   }
   for (int b = 0; b < apsis_body_count; ++b) {
     if (apsis_bodies[b] < 0 ||
@@ -784,7 +796,7 @@ principia_ksa_Status principia_ksa__PredictMasslessDetailed(
                   "no body with index " + std::to_string(apsis_bodies[b]));
     }
   }
-  if (!Finite(initial->q) || !Finite(initial->p) || !Finite(t_end)) {
+  if (!Finite(initial->q) || !Finite(initial->p) || std::isnan(t_end)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "state or time not finite");
   }
   if (auto const status = CheckTime(ephemeris, t0);
@@ -801,11 +813,11 @@ principia_ksa_Status principia_ksa__PredictMasslessDetailed(
     double const norm = std::sqrt(Dot(thrust_direction, thrust_direction));
     if (!Finite(thrust) || thrust < 0 || !Finite(thrust_direction) ||
         !(norm > 0) || !Finite(initial_mass) || !(initial_mass > 0) ||
-        !Finite(mass_flow) || mass_flow < 0 ||
+        !Finite(mass_flow) || mass_flow < 0 || !Finite(t_end) ||
         !(initial_mass - mass_flow * (t_end - t0) > 0)) {
       return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT,
-                  "invalid thrust, direction, mass or mass flow (the mass "
-                  "must stay positive until t_end)");
+                  "invalid thrust, direction, mass or mass flow (t_end must "
+                  "be finite and the mass stay positive until it)");
     }
     Vector<double, Frame> const direction(
         {thrust_direction.x / norm, thrust_direction.y / norm,
@@ -819,115 +831,148 @@ principia_ksa_Status principia_ksa__PredictMasslessDetailed(
     };
   }
 
-  // The flow goes in chunks: each is sampled and searched for apsides, then
-  // forgotten but for its last point, where the next one starts. A
-  // trajectory costs ~430 bytes a step, so this bounds memory at any length.
-  // Apsides lie between successive points, so none is lost at a boundary.
+  // The flow goes in chunks of at most a month and `chunk_steps` steps: the
+  // ephemeris is prolonged only as far as the steps go. Each chunk keeps every
+  // step (for the step count and exact apsides), then is copied into the
+  // thinned trajectory returned and forgotten but for its last point, where
+  // the next one starts. Apsides lie between successive points, so none is
+  // lost at a boundary.
   constexpr std::int64_t chunk_steps = 50'000;
-  Instant const t_final = ToInstant(t_end);
-  DiscreteTrajectory<Frame> trajectory;
-  absl::Status status = trajectory.Append(
-      ToInstant(t0),
-      DegreesOfFreedom<Frame>(ToPosition(initial->q), ToVelocity(initial->p)));
-  if (!status.ok()) {
-    return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, std::string(status.message()));
+  Time const chunk_span = 30 * Day;
+  DegreesOfFreedom<Frame> const initial_degrees_of_freedom(
+      ToPosition(initial->q), ToVelocity(initial->p));
+  DiscreteTrajectory<Frame> chunk;
+  DiscreteTrajectory<Frame> thinned;
+  if (downsampling_tolerance > 0) {
+    thinned.segments().begin()->SetDownsampling(
+        {.tolerance = downsampling_tolerance * Metre});
+  }
+  for (auto* const trajectory : {&chunk, &thinned}) {
+    if (absl::Status const status =
+            trajectory->Append(ToInstant(t0), initial_degrees_of_freedom);
+        !status.ok()) {
+      return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, std::string(status.message()));
+    }
   }
 
-  int written = 0;
-  auto add = [&](double const t, DegreesOfFreedom<Frame> const& dof) {
-    times[written] = t;
-    states[written] = ToQP(dof);
-    ++written;
-  };
-  // The first point, the multiples of the interval in between, the last.
-  add(t0, trajectory.front().degrees_of_freedom);
-  double k = std::floor(t0 / sample_interval) + 1;
-
   // Apsides relative to each requested body.
-  int found = 0;
+  std::vector<principia_ksa_Apsis> found;
   auto find_apsides = [&]() {
-    if (trajectory.size() < 3) {
+    if (chunk.size() < 3) {
       return;
     }
-    DiscreteTrajectoryView<Frame> const view(&trajectory);
-    for (int b = 0; b < apsis_body_count && found < apsis_capacity; ++b) {
+    DiscreteTrajectoryView<Frame> const view(&chunk);
+    for (int b = 0; b < apsis_body_count &&
+                    static_cast<int>(found.size()) < apsis_capacity;
+         ++b) {
       auto const& reference =
           *ephemeris->ephemeris->trajectory(ephemeris->bodies[apsis_bodies[b]]);
       DistinguishedPoints<Frame> apoapsides, periapsides;
-      ComputeApsides(reference, view, apsis_capacity - found, apoapsides,
-                     periapsides);
+      ComputeApsides(reference, view,
+                     apsis_capacity - static_cast<int>(found.size()),
+                     apoapsides, periapsides);
       for (int kind = 0; kind < 2; ++kind) {
         for (auto const& [time, dof] : kind == 0 ? periapsides : apoapsides) {
-          if (found == apsis_capacity) {
+          if (static_cast<int>(found.size()) == apsis_capacity) {
             break;
           }
-          apsides[found++] = {
-              apsis_bodies[b], kind, FromInstant(time),
-              (dof.position() - reference.EvaluatePosition(time)).Norm() /
-                  Metre,
-              ToQP(dof)};
+          found.push_back(
+              {apsis_bodies[b], kind, FromInstant(time),
+               (dof.position() - reference.EvaluatePosition(time)).Norm() /
+                   Metre,
+               ToQP(dof)});
         }
       }
     }
   };
 
+  // How Principia's flow ends a chunk: kResourceExhausted when the step limit
+  // is reached; OK at its target, or short of it on hitting a body (its
+  // kOutOfRange is swallowed); kFailedPrecondition on falling into a centre.
+  Instant const final_time =
+      Finite(t_end) ? ToInstant(t_end) : InfiniteFuture;
   std::int64_t steps_left = max_steps;
+  absl::Status status;
   for (;;) {
-    std::int64_t const steps = std::min(steps_left, chunk_steps);
+    Instant const from = chunk.back().time;
+    Instant const target = final_time - from < chunk_span ? final_time
+                                                          : from + chunk_span;
     Ephemeris<Frame>::AdaptiveStepParameters const parameters(
         MonotonicIntegrator::Get(),
-        steps,
-        /*length_integration_tolerance=*/1 * Metre,
-        /*speed_integration_tolerance=*/1 * Metre / Second);
+        std::min(steps_left, chunk_steps),
+        length_tolerance * Metre,
+        speed_tolerance * Metre / Second);
     status = ephemeris->ephemeris->FlowWithAdaptiveStep(
-        &trajectory, intrinsic_acceleration, t_final, parameters);
-    steps_left -= static_cast<std::int64_t>(trajectory.size()) - 1;
-    // Grid points up to this chunk's last point, which starts the next.
-    double const chunk_last = FromInstant(trajectory.back().time);
-    for (; written < capacity - 1; ++k) {
-      double const t = k * sample_interval;
-      if (!(t < chunk_last)) {
-        break;
+        &chunk, intrinsic_acceleration, target, parameters);
+    std::int64_t const taken = static_cast<std::int64_t>(chunk.size()) - 1;
+    *steps += taken;
+    steps_left -= taken;
+    for (auto it = std::next(chunk.begin()); it != chunk.end(); ++it) {
+      if (absl::Status const appended =
+              thinned.Append(it->time, it->degrees_of_freedom);
+          !appended.ok()) {
+        return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR,
+                    std::string(appended.message()));
       }
-      add(t, trajectory.EvaluateDegreesOfFreedom(ToInstant(t)));
     }
     find_apsides();
-    if (!absl::IsResourceExhausted(status) || steps_left <= 0 ||
-        !(trajectory.back().time < t_final)) {
+    bool const at_target = chunk.back().time == target;
+    if (status.ok() && at_target && target == final_time) {
+      *end = PRINCIPIA_KSA_PREDICTION_REACHED_END;
       break;
     }
-    trajectory.ForgetBefore(trajectory.back().time);
+    bool const continues = (status.ok() && at_target) ||
+                           absl::IsResourceExhausted(status);
+    if (!continues || chunk.back().time == from) {
+      if (status.ok() || absl::IsFailedPrecondition(status)) {
+        *end = PRINCIPIA_KSA_PREDICTION_COLLISION;
+        last_error = status.ok() ? "collision with a body"
+                                 : std::string(status.message());
+      } else {
+        *end = PRINCIPIA_KSA_PREDICTION_MAX_STEPS;  // E.g. cancelled.
+        last_error = std::string(status.message());
+      }
+      break;
+    }
+    if (steps_left <= 0) {
+      *end = PRINCIPIA_KSA_PREDICTION_MAX_STEPS;
+      break;
+    }
+    chunk.ForgetBefore(chunk.back().time);
   }
 
-  // How Principia's flow ends: the step limit is kResourceExhausted (or
-  // kDeadlineExceeded if the ephemeris couldn't be prolonged); hitting a body
-  // is OK but short of t_end (its kOutOfRange is swallowed); falling into a
-  // centre is kFailedPrecondition. Only the last two are impacts.
-  bool const reached_end = trajectory.back().time == t_final;
-  if (status.ok() && reached_end) {
-    *end = PRINCIPIA_KSA_PREDICTION_REACHED_END;
-  } else if (absl::IsResourceExhausted(status) ||
-             absl::IsDeadlineExceeded(status)) {
-    *end = PRINCIPIA_KSA_PREDICTION_MAX_STEPS;
-    last_error = std::string(status.message());
-  } else if (status.ok() || absl::IsFailedPrecondition(status)) {
-    *end = PRINCIPIA_KSA_PREDICTION_COLLISION;
-    last_error = status.ok() ? "collision with a body"
-                             : std::string(status.message());
-  } else {
-    *end = PRINCIPIA_KSA_PREDICTION_MAX_STEPS;  // E.g. cancelled.
-    last_error = std::string(status.message());
+  // Into arrays the caller releases with principia_ksa__Free.
+  int const n = static_cast<int>(thinned.size());
+  *times = static_cast<double*>(std::malloc(sizeof(double) * n));
+  *states = static_cast<principia_ksa_QP*>(
+      std::malloc(sizeof(principia_ksa_QP) * n));
+  if (*times == nullptr || *states == nullptr) {
+    std::free(*times);
+    std::free(*states);
+    *times = nullptr;
+    *states = nullptr;
+    return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, "out of memory");
   }
-
-  // The last point, unless no step was taken.
-  double const last = FromInstant(trajectory.back().time);
-  if (times[written - 1] < last) {
-    add(last, trajectory.back().degrees_of_freedom);
+  int i = 0;
+  for (auto const& [time, dof] : thinned) {
+    (*times)[i] = FromInstant(time);
+    (*states)[i] = ToQP(dof);
+    ++i;
   }
-  *count = written;
-  *apsis_count = found;
+  *count = n;
+  if (!found.empty()) {
+    *apsides = static_cast<principia_ksa_Apsis*>(
+        std::malloc(sizeof(principia_ksa_Apsis) * found.size()));
+    if (*apsides == nullptr) {
+      return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, "out of memory");
+    }
+    std::copy(found.begin(), found.end(), *apsides);
+    *apsis_count = static_cast<int>(found.size());
+  }
   return PRINCIPIA_KSA_OK;
   PRINCIPIA_KSA_CATCH
 }
+
+void principia_ksa__Free(void* const array) { std::free(array); }
 
 }  // extern "C"

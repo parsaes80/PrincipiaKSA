@@ -148,6 +148,30 @@ internal static class MapOverlay
         {
             Draw(impact, ImpactColor, "Impact", prediction.Times[last], null, null, apsis: false);
         }
+        // Where the danger track ends on an impact: the ground it crashes
+        // into, where that ground is now, with an X, in the track's colour.
+        if (prediction.Impact && prediction.Danger.Length > 0 && prediction.Danger[^1].Length > 0 &&
+            prediction.Frame.Centre is IParentBody body)
+        {
+            (double t, double3 relative) = prediction.Danger[^1][^1];
+            double3 site = prediction.Frame.Centre.GetPositionEcl() + OrbitLines.GroundNowCce(body, t, relative);
+            if (t >= now && Screen(site) is { } at)
+            {
+                byte4 c = (byte4)FlightPlan.DangerColor;
+                float2 p = origin + at;
+                const float arm = 3.5f;
+                drawList.AddLine(p - new float2(arm, arm), p + new float2(arm, arm), c);
+                drawList.AddLine(p - new float2(arm, -arm), p + new float2(arm, -arm), c);
+                if (float2.Distance(at, mouse) < 12)
+                {
+                    Span<char> buffer = stackalloc char[128];
+                    float row = ImGui.GetTextLineHeight();
+                    ImGuiHelper.DrawTextOnScreen(drawList, p + new float2(arm + 4, -row / 2), "Impact site", c);
+                    ImGuiHelper.DrawTextOnScreen(drawList, p + new float2(arm + 4, row / 2),
+                                                 "T-" + new string(TimeSpanReference.ToBreakdown(t - now, buffer)), c);
+                }
+            }
+        }
     }
 
     // Whether a body lies between the camera and `ecl`.

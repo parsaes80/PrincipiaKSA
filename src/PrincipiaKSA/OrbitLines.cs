@@ -201,12 +201,8 @@ internal static class OrbitLines
             return;
         }
         Camera camera = viewport.GetCamera();
-        UniverseTime now = Universe.GetElapsedTime();
-        double nowSeconds = GameTime.ToSecondsSinceJ2000(now);
+        double nowSeconds = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
         double3 centreEgo = camera.GetPositionEgo(prediction.Frame.Centre);
-        doubleQuat cci2Cce = body.GetCci2Cce();
-        doubleQuat cce2Cci = cci2Cce.Inverse();
-        doubleQuat ccf2CciNow = body.GetCcf2Cci(now);
         byte4 color = (byte4)FlightPlan.DangerColor;
         foreach ((double Time, double3 Relative)[] run in prediction.Danger)
         {
@@ -218,9 +214,7 @@ internal static class OrbitLines
                 {
                     continue;
                 }
-                double3 ccf = relative.Transform(cce2Cci)
-                    .Transform(body.GetCcf2Cci(GameTime.FromSecondsSinceJ2000(t)).Inverse());
-                _positions[count] = (centreEgo + ccf.Transform(ccf2CciNow).Transform(cci2Cce)) * 0.998;
+                _positions[count] = (centreEgo + GroundNowCce(body, t, relative)) * 0.998;
                 _colors[count++] = color;
             }
             if (count < 2)
@@ -229,6 +223,17 @@ internal static class OrbitLines
             }
             AddLine(viewport, count);
         }
+    }
+
+    // A point relative to `body` (Cce axes) at time t, turned with the body's
+    // rotation to where the ground under it is now (Orbit.
+    // ProjectToCurrentRotationCce): KSA's danger ground track.
+    public static double3 GroundNowCce(IParentBody body, double t, double3 relative)
+    {
+        doubleQuat cci2Cce = body.GetCci2Cce();
+        double3 ccf = relative.Transform(cci2Cce.Inverse())
+            .Transform(body.GetCcf2Cci(GameTime.FromSecondsSinceJ2000(t)).Inverse());
+        return ccf.Transform(body.GetCcf2Cci(Universe.GetElapsedTime())).Transform(cci2Cce);
     }
 
     // The parts of the nodes' approach tracks no bright line shows, dimmer, so

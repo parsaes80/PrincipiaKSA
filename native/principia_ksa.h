@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -187,7 +189,7 @@ PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__FlowMassless(
 // Why a prediction ended.
 typedef enum principia_ksa_PredictionEnd {
   PRINCIPIA_KSA_PREDICTION_REACHED_END = 0,  // Got to t_end.
-  PRINCIPIA_KSA_PREDICTION_MAX_STEPS = 1,    // Ran out of steps first.
+  PRINCIPIA_KSA_PREDICTION_MAX_STEPS = 1,    // Took all its steps first.
   PRINCIPIA_KSA_PREDICTION_COLLISION = 2,    // Hit a body (or another error).
 } principia_ksa_PredictionEnd;
 
@@ -201,37 +203,50 @@ typedef struct principia_ksa_Apsis {
   principia_ksa_QP state;  // Absolute.
 } principia_ksa_Apsis;
 
-// Predicts a massless body from `initial` at `t0` towards `t_end` (1 m and
-// 1 m/s tolerances, at most `max_steps` steps), prolonging the ephemeris as
-// needed. An engine may burn throughout: `thrust` (N, 0 to coast) along the
-// fixed inertial `thrust_direction`, the mass falling from `initial_mass` (kg)
-// at `mass_flow` (kg/s), as KSA flies a planned burn.
-// Writes to `times` and `states` at most `capacity` points: the first, every
-// multiple of `sample_interval` (> 0) in absolute time, and the last, so that
-// successive predictions of the same motion share their points. Also the
-// apsides relative to each of `apsis_bodies`, at most `apsis_capacity` in
-// all, earliest first per body. `*end` says why the prediction stopped.
-PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__PredictMasslessDetailed(
+// Predicts a massless body from `initial` at `t0` as Principia predicts a
+// vessel: with its adaptive integrator for predictions (Dormand–El-Mikkawy–
+// Prince RKN 4(3)FM) at `length_tolerance` (m) and `speed_tolerance` (m/s),
+// until it has taken `max_steps` steps, reached `t_end`, or hit a body. The
+// ephemeris is prolonged as the flow goes, a month at a time, so a prediction
+// that runs out of steps early prolongs it no further than it needs.
+// An engine may burn throughout: `thrust` (N, 0 to coast) along the fixed
+// inertial `thrust_direction`, the mass falling from `initial_mass` (kg) at
+// `mass_flow` (kg/s), as KSA flies a planned burn; `t_end` must then be
+// finite and the mass stay positive until it.
+// The trajectory is every step, thinned as Principia thins vessel histories
+// to the points a cubic Hermite spline through them needs to stay within
+// `downsampling_tolerance` (m; 0 keeps every step). Its `*count` points are
+// returned in `*times` and `*states`, and the apsides relative to each of
+// `apsis_bodies` (computed on every step; at most `apsis_capacity` in all,
+// earliest first per body) in `*apsides`: arrays the library allocates, to be
+// released with principia_ksa__Free (null when empty). `*steps` is the number
+// of steps taken, `*end` why the prediction stopped.
+PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__Predict(
     principia_ksa_Ephemeris const* ephemeris,
     principia_ksa_QP const* initial,
     double t0,
     double t_end,
-    int max_steps,
+    int64_t max_steps,
+    double length_tolerance,
+    double speed_tolerance,
     principia_ksa_XYZ thrust_direction,
     double thrust,
     double initial_mass,
     double mass_flow,
-    double sample_interval,
-    double* times,
-    principia_ksa_QP* states,
-    int capacity,
-    int* count,
+    double downsampling_tolerance,
     int const* apsis_bodies,
     int apsis_body_count,
-    principia_ksa_Apsis* apsides,
     int apsis_capacity,
+    double** times,
+    principia_ksa_QP** states,
+    int* count,
+    principia_ksa_Apsis** apsides,
     int* apsis_count,
+    int64_t* steps,
     principia_ksa_PredictionEnd* end);
+
+// Releases an array returned by principia_ksa__Predict.
+PRINCIPIA_KSA_API void principia_ksa__Free(void* array);
 
 #ifdef __cplusplus
 }  // extern "C"

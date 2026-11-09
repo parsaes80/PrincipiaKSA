@@ -8,13 +8,13 @@ internal static partial class Predictor
 {
     // Frame coordinates, impact, apsides and closest approaches.
     private static Prediction Finish(PrincipiaSystem system, Request r, Trajectory trajectory, bool isFlightPlan,
-                                     int firstIgnition, string? note, Stopwatch sw, Buffers b)
+                                     int firstIgnition, string? note, Stopwatch sw)
     {
         Ephemeris ephemeris = system.Ephemeris;
         FrameSpec frame = r.Frame;
         double radius = frame.Centre.MeanRadius;
         // End the line where it meets the centre body's surface.
-        bool impact = Impact.Truncate(ephemeris, frame, trajectory, b);
+        bool impact = Impact.Truncate(ephemeris, frame, trajectory);
         int n = trajectory.Times.Count;
         var relative = new QP[n];
         for (int i = 0; i < n; i++)
@@ -131,6 +131,7 @@ internal static partial class Predictor
                                  .Select(a => (Dense(a.Item1), Dense(Math.Min(a.Item2, n - 1)))).ToArray(),
             FirstIgnition = n > 0 ? Dense(Math.Min(firstIgnition, n - 1)) : 0,
             End = trajectory.End,
+            Steps = trajectory.Steps,
             Impact = impact,
             Markers = markers,
             ComputeMs = sw.Elapsed.TotalMilliseconds,

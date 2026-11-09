@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
+#include <limits>
 #include <numbers>
+#include <vector>
 
 #include "../principia_ksa.h"
 
@@ -39,22 +42,63 @@ double Energy(principia_ksa_Body const* bodies, principia_ksa_QP const* s, int n
   return e;  // G × the total energy; G cancels in relative drift.
 }
 
-// A prediction on a grid fitting `capacity` points, without apsides.
-principia_ksa_Status Predict(principia_ksa_Ephemeris const* const e,
-                             principia_ksa_QP const* const initial,
-                             double const t0, double const t1,
-                             int const max_steps, double* const times,
-                             principia_ksa_QP* const states, int const capacity,
-                             int* const count, principia_ksa_PredictionEnd* const end,
-                             principia_ksa_XYZ const direction = {0, 0, 0},
-                             double const thrust = 0, double const mass = 0,
-                             double const mass_flow = 0) {
-  int apsides = 0;
-  return principia_ksa__PredictMasslessDetailed(
-      e, initial, t0, t1, max_steps, direction, thrust, mass, mass_flow,
-      (t1 - t0) / (capacity - 2), times, states, capacity, count, nullptr, 0,
-      nullptr, 0, &apsides, end);
+// A prediction, copied out of the library's arrays.
+struct Prediction {
+  principia_ksa_Status status = PRINCIPIA_KSA_OK;
+  std::vector<double> times;
+  std::vector<principia_ksa_QP> states;
+  std::vector<principia_ksa_Apsis> apsides;
+  std::int64_t steps = 0;
+  principia_ksa_PredictionEnd end = PRINCIPIA_KSA_PREDICTION_REACHED_END;
+  int count() const { return static_cast<int>(times.size()); }
+};
+
+// `t_end` +∞: until the steps run out. Thinned to `downsampling` metres (0:
+// every step), at 1 m and 1 m/s.
+Prediction Predict(principia_ksa_Ephemeris const* const e,
+                   principia_ksa_QP const* const initial, double const t0,
+                   double const t_end, std::int64_t const max_steps,
+                   double const downsampling = 10,
+                   std::vector<int> const& apsis_bodies = {},
+                   principia_ksa_XYZ const direction = {0, 0, 0},
+                   double const thrust = 0, double const mass = 0,
+                   double const mass_flow = 0) {
+  Prediction p;
+  double* times = nullptr;
+  principia_ksa_QP* states = nullptr;
+  principia_ksa_Apsis* apsides = nullptr;
+  int count = 0, apsis_count = 0;
+  p.status = principia_ksa__Predict(
+      e, initial, t0, t_end, max_steps, 1, 1, direction, thrust, mass,
+      mass_flow, downsampling, apsis_bodies.data(),
+      static_cast<int>(apsis_bodies.size()), 100'000, &times, &states, &count,
+      &apsides, &apsis_count, &p.steps, &p.end);
+  p.times.assign(times, times + count);
+  p.states.assign(states, states + count);
+  p.apsides.assign(apsides, apsides + apsis_count);
+  principia_ksa__Free(times);
+  principia_ksa__Free(states);
+  principia_ksa__Free(apsides);
+  return p;
 }
+
+// Position at time t on the cubic Hermite spline through a prediction's
+// points, as the C# side interpolates them.
+principia_ksa_XYZ HermiteAt(Prediction const& p, double const t) {
+  int i = 1;
+  while (i < p.count() - 1 && p.times[i] < t) ++i;
+  double const h = p.times[i] - p.times[i - 1];
+  double const u = (t - p.times[i - 1]) / h, u2 = u * u, u3 = u2 * u;
+  auto const& a = p.states[i - 1];
+  auto const& b = p.states[i];
+  double const c0 = 2 * u3 - 3 * u2 + 1, c1 = (u3 - 2 * u2 + u) * h,
+               c2 = -2 * u3 + 3 * u2, c3 = (u3 - u2) * h;
+  return {c0 * a.q.x + c1 * a.p.x + c2 * b.q.x + c3 * b.p.x,
+          c0 * a.q.y + c1 * a.p.y + c2 * b.q.y + c3 * b.p.y,
+          c0 * a.q.z + c1 * a.p.z + c2 * b.q.z + c3 * b.p.z};
+}
+
+double const infinity = std::numeric_limits<double>::infinity();
 
 void Log(int const severity, char const* const message) {
   std::printf("  principia[%d]: %s\n", severity, message);
@@ -314,201 +358,192 @@ int main(int argc, char** argv) {
            "t1 before t0 → INVALID_ARGUMENT (not a CHECK abort)");
 
     {
-      static double times[500];
-      static principia_ksa_QP points[500];
-      int count = 0;
-      principia_ksa_PredictionEnd end;
       auto const t = std::chrono::steady_clock::now();
-      Expect(Predict(e, &iss, t0, t0 + 86400, 100000, times, points, 500, &count,
-                     &end) == PRINCIPIA_KSA_OK &&
-                 end == PRINCIPIA_KSA_PREDICTION_REACHED_END && count > 400 &&
-                 count <= 500 && times[0] == t0 && times[count - 1] == t0 + 86400,
-             "a day's prediction fills the buffer, first and last kept");
-      std::printf("  prediction of a day in %.1f ms\n",
+      Prediction const day = Predict(e, &iss, t0, t0 + 86400, 100000);
+      Expect(day.status == PRINCIPIA_KSA_OK &&
+                 day.end == PRINCIPIA_KSA_PREDICTION_REACHED_END &&
+                 day.count() >= 2 && day.times[0] == t0 &&
+                 day.times[day.count() - 1] == t0 + 86400,
+             "a day's prediction reaches its end, first and last kept");
+      std::printf("  a day in %.1f ms: %lld steps, %d points kept within 10 m\n",
                   std::chrono::duration<double, std::milli>(
-                      std::chrono::steady_clock::now() - t).count());
-      // Grid sampling and exact apsides relative to Earth.
+                      std::chrono::steady_clock::now() - t).count(),
+                  static_cast<long long>(day.steps), day.count());
+      // Every step, unthinned; apsides exact relative to Earth.
       {
-        static double gt[2000];
-        static principia_ksa_QP gp[2000];
-        static principia_ksa_Apsis aps[200];
-        int gn = 0, an = 0, earth_index = 1;
-        principia_ksa_PredictionEnd ge;
-        Expect(principia_ksa__PredictMasslessDetailed(
-                   e, &iss, t0 + 7, t0 + 7 + 86400, 100000, {0, 0, 0}, 0, 0, 0,
-                   64, gt, gp, 2000, &gn, &earth_index, 1, aps, 200, &an,
-                   &ge) == PRINCIPIA_KSA_OK,
-               "PredictMasslessDetailed");
-        bool on_grid = gt[0] == t0 + 7 && gt[gn - 1] == t0 + 7 + 86400;
-        for (int i = 1; i < gn - 1; ++i) {
-          on_grid &= std::fmod(gt[i], 64) == 0;
+        Prediction const every =
+            Predict(e, &iss, t0 + 7, t0 + 7 + 86400, 100000, 0, {1});
+        bool increasing = true;
+        for (int i = 1; i < every.count(); ++i) {
+          increasing &= every.times[i] > every.times[i - 1];
         }
         int peri = 0, apo = 0;
         double min_peri = 1e30, max_apo = 0;
-        for (int i = 0; i < an; ++i) {
-          if (aps[i].is_apoapsis) {
+        for (auto const& a : every.apsides) {
+          if (a.is_apoapsis) {
             ++apo;
-            max_apo = std::fmax(max_apo, aps[i].distance);
+            max_apo = std::fmax(max_apo, a.distance);
           } else {
             ++peri;
-            min_peri = std::fmin(min_peri, aps[i].distance);
+            min_peri = std::fmin(min_peri, a.distance);
           }
         }
-        std::printf("  %d points on a 64 s grid; %d periapsides (lowest %.1f km), "
+        std::printf("  every step: %lld steps, %d points; %d periapsides (lowest %.1f km), "
                     "%d apoapsides (highest %.1f km)\n",
-                    gn, peri, min_peri / 1000, apo, max_apo / 1000);
-        Expect(on_grid && gn == 1352, "sample points sit on the absolute time grid");
+                    static_cast<long long>(every.steps), every.count(), peri,
+                    min_peri / 1000, apo, max_apo / 1000);
+        Expect(every.count() == every.steps + 1 && increasing,
+               "unthinned, the points are the integrator's steps");
+        Expect(day.count() < every.count(),
+               "thinned to 10 m, fewer points than steps");
         Expect(peri >= 14 && peri <= 17 && apo >= 14 && apo <= 17,
                "about one periapsis and one apoapsis per 92 min orbit");
+        // The thinned points' spline stays on the unthinned path.
+        Prediction const thin = Predict(e, &iss, t0 + 7, t0 + 7 + 86400, 100000);
+        double worst = 0;
+        for (int i = 0; i < every.count(); ++i) {
+          worst = std::fmax(worst, Norm(Minus(HermiteAt(thin, every.times[i]),
+                                              every.states[i].q)));
+        }
+        std::printf("  thinned to %d points, its spline within %.2f m of every step\n",
+                    thin.count(), worst);
+        Expect(worst < 20, "the thinned spline follows the path within its tolerance");
       }
-      // A long prediction flows in chunks of 50,000 steps: 120 days of low
-      // orbit is several chunks, which must join without a gap or a doubled
-      // point or apsis.
+      // A long prediction flows in chunks of 50,000 steps and a month: 120
+      // days of low orbit is several, which must join without a gap or a
+      // doubled point or apsis.
       {
-        static double lt[10000];
-        static principia_ksa_QP lp[10000];
-        static principia_ksa_Apsis la[5000];
-        int ln = 0, lan = 0, earth_index = 1;
-        principia_ksa_PredictionEnd le;
-        double const span = 120 * 86400.0, grid = 2048;
         // 2% faster than circular: e ≈ 0.02, one clear periapsis per orbit.
         principia_ksa_QP const eccentric{
             iss.q, {earth0.p.x + 1.02 * (iss.p.x - earth0.p.x),
                     earth0.p.y + 1.02 * (iss.p.y - earth0.p.y),
                     earth0.p.z + 1.02 * (iss.p.z - earth0.p.z)}};
         auto const start = std::chrono::steady_clock::now();
-        Expect(principia_ksa__PredictMasslessDetailed(
-                   e, &eccentric, t0, t0 + span, 1'000'000, {0, 0, 0}, 0, 0, 0, grid,
-                   lt, lp, 10000, &ln, &earth_index, 1, la, 5000, &lan,
-                   &le) == PRINCIPIA_KSA_OK &&
-                   le == PRINCIPIA_KSA_PREDICTION_REACHED_END,
-               "a 120-day low-orbit prediction reaches its end");
+        Prediction const long_run =
+            Predict(e, &eccentric, t0, t0 + 120 * 86400.0, 1'000'000, 10, {1});
         double const seconds = std::chrono::duration<double>(
                                    std::chrono::steady_clock::now() - start).count();
-        // t0, the multiples of the grid strictly in between, t0 + span.
-        int const multiples =
-            static_cast<int>(std::ceil((t0 + span) / grid) - std::floor(t0 / grid)) - 1;
-        bool grid_ok = ln == multiples + 2 && lt[0] == t0 && lt[ln - 1] == t0 + span;
-        for (int i = 1; i < ln - 1; ++i) {
-          grid_ok &= lt[i] == lt[i - 1] + (i == 1 ? lt[1] - lt[0] : grid) &&
-                     std::fmod(lt[i], grid) == 0;
+        Expect(long_run.status == PRINCIPIA_KSA_OK &&
+                   long_run.end == PRINCIPIA_KSA_PREDICTION_REACHED_END &&
+                   long_run.steps > 50'000,
+               "a 120-day low-orbit prediction reaches its end over several chunks");
+        bool joined = long_run.times[0] == t0 &&
+                      long_run.times[long_run.count() - 1] == t0 + 120 * 86400.0;
+        for (int i = 1; i < long_run.count(); ++i) {
+          joined &= long_run.times[i] > long_run.times[i - 1];
         }
         // Periapsides one orbit apart, never doubled or skipped.
         double previous = -1, shortest = 1e30, longest = 0;
         int peri = 0;
-        for (int i = 0; i < lan; ++i) {
-          if (!la[i].is_apoapsis) {
+        for (auto const& a : long_run.apsides) {
+          if (!a.is_apoapsis) {
             if (previous >= 0) {
-              shortest = std::fmin(shortest, la[i].time - previous);
-              longest = std::fmax(longest, la[i].time - previous);
+              shortest = std::fmin(shortest, a.time - previous);
+              longest = std::fmax(longest, a.time - previous);
             }
-            previous = la[i].time;
+            previous = a.time;
             ++peri;
           }
         }
-        std::printf("  120 days in %.2f s: %d points, %d periapsides %.1f–%.1f min apart\n",
-                    seconds, ln, peri, shortest / 60, longest / 60);
-        Expect(grid_ok, "chunks join on the grid without gaps or doubled points");
+        std::printf("  120 days in %.2f s: %lld steps, %d points, %d periapsides "
+                    "%.1f–%.1f min apart\n",
+                    seconds, static_cast<long long>(long_run.steps),
+                    long_run.count(), peri, shortest / 60, longest / 60);
+        Expect(joined, "chunks join without gaps or doubled points");
         Expect(peri > 1700 && shortest > 85 * 60 && longest < 105 * 60,
                "chunks join without lost or doubled apsides");
       }
-      // Steadiness: predictions of the same motion started 30 s apart (from
-      // the 1 mm vessel track, as the game does) agree at common times up to
-      // their integration error.
+      // No time limit: a prediction runs until its steps run out, and
+      // prolongs the ephemeris only a month or so beyond where it got.
       {
-        static double at[4000], bt[4000];
-        static principia_ksa_QP ap[4000], bp[4000];
-        static principia_ksa_Apsis aa[100], ba[100];
-        int an = 0, bn = 0, aan = 0, ban = 0, earth_index = 1;
-        principia_ksa_PredictionEnd ae, be;
+        double t_min, t_max_before, t_max_after;
+        principia_ksa__EphemerisTimeRange(e, &t_min, &t_max_before);
+        Prediction const open = Predict(e, &iss, t0, infinity, 2000);
+        principia_ksa__EphemerisTimeRange(e, &t_min, &t_max_after);
+        double const last = open.times[open.count() - 1];
+        std::printf("  no time limit, 2000 steps: %.2f d, ephemeris to %.1f d\n",
+                    (last - t0) / 86400, (t_max_after - t0) / 86400);
+        Expect(open.status == PRINCIPIA_KSA_OK &&
+                   open.end == PRINCIPIA_KSA_PREDICTION_MAX_STEPS &&
+                   open.steps == 2000 && last > t0,
+               "without a time limit, a prediction ends when its steps run out");
+        Expect(t_max_after <= std::fmax(t_max_before, last + 31 * 86400.0) + 86400,
+               "the ephemeris is prolonged only as far as the steps went");
+      }
+      // Steadiness: predictions of the same motion started 30 s apart (from
+      // the 1 mm vessel track, as the game does) agree up to their
+      // integration error.
+      {
         principia_ksa_QP later;
         principia_ksa__FlowMassless(e, &iss, t0, t0 + 30, &later);
-        principia_ksa__PredictMasslessDetailed(e, &iss, t0, t0 + 86400, 100000, {0, 0, 0}, 0, 0, 0, 64,
-                                               at, ap, 4000, &an, &earth_index, 1, aa, 100, &aan, &ae);
-        principia_ksa__PredictMasslessDetailed(e, &later, t0 + 30, t0 + 30 + 86400, 100000, {0, 0, 0}, 0,
-                                               0, 0, 64, bt, bp, 4000, &bn, &earth_index, 1, ba, 100, &ban,
-                                               &be);
+        Prediction const a = Predict(e, &iss, t0, t0 + 86400, 100000, 0, {1});
+        Prediction const b =
+            Predict(e, &later, t0 + 30, t0 + 30 + 86400, 100000, 0, {1});
         double worst_hour = 0, worst_day = 0;
-        for (int i = 0, j = 0; i < an; ++i) {
-          while (j < bn && bt[j] < at[i]) ++j;
-          if (j < bn && bt[j] == at[i]) {
-            double const d = Norm(Minus(ap[i].q, bp[j].q));
-            if (at[i] <= t0 + 3600) worst_hour = std::fmax(worst_hour, d);
-            worst_day = std::fmax(worst_day, d);
-          }
+        for (int i = 0; i < a.count(); ++i) {
+          if (a.times[i] < t0 + 60) continue;
+          double const d = Norm(Minus(HermiteAt(b, a.times[i]), a.states[i].q));
+          if (a.times[i] <= t0 + 3600) worst_hour = std::fmax(worst_hour, d);
+          worst_day = std::fmax(worst_day, d);
         }
         double first_ap_shift = 1e30;
-        for (int i = 0; i < aan; ++i) {
-          for (int j = 0; j < ban; ++j) {
-            if (aa[i].is_apoapsis && ba[j].is_apoapsis && aa[i].time > t0 + 30 && aa[i].time < t0 + 4 * 3600) {
-              first_ap_shift = std::fmin(first_ap_shift, std::fabs(aa[i].time - ba[j].time));
+        for (auto const& x : a.apsides) {
+          for (auto const& y : b.apsides) {
+            if (x.is_apoapsis && y.is_apoapsis && x.time > t0 + 30 &&
+                x.time < t0 + 4 * 3600) {
+              first_ap_shift = std::fmin(first_ap_shift, std::fabs(x.time - y.time));
             }
           }
         }
         std::printf("  predictions 30 s apart: differ by %.2f m within 1 h, %.1f m within 1 d; "
                     "apoapsis time differs by %.3f s\n", worst_hour, worst_day, first_ap_shift);
         Expect(worst_hour < 10, "successive predictions agree to metres over an hour");
-
-        // What 0.17 m/s of start error (KSA's conic just before a rebuild with
-        // a 1 m position tolerance, in LEO under J2) does to the apsides.
-        principia_ksa_QP nudged = iss;
-        double const v = Norm(iss.p);
-        nudged.p.y += 0.17 * iss.p.y / v;
-        nudged.p.z += 0.17 * iss.p.z / v;
-        principia_ksa__PredictMasslessDetailed(e, &nudged, t0, t0 + 86400, 100000, {0, 0, 0}, 0, 0, 0, 64,
-                                               bt, bp, 4000, &bn, &earth_index, 1, ba, 100, &ban, &be);
-        auto first = [](principia_ksa_Apsis const* a, int n, int apo) {
-          for (int i = 0; i < n; ++i) if (a[i].is_apoapsis == apo) return a[i];
-          return a[0];
-        };
-        auto const a0 = first(aa, aan, 1), a1 = first(ba, ban, 1);
-        auto const p0 = first(aa, aan, 0), p1 = first(ba, ban, 0);
-        std::printf("  0.17 m/s more at the start: first Ap moves %.0f m in altitude and %.0f s in time, "
-                    "first Pe %.0f m and %.0f s\n",
-                    a1.distance - a0.distance, a1.time - a0.time, p1.distance - p0.distance,
-                    p1.time - p0.time);
       }
       // A 100 s prograde burn: 100 kN, 10 t, 30 kg/s → Δv = 3333 ln(10/7).
       {
-        static double bt[50], ct[50];
-        static principia_ksa_QP bp[50], cp[50];
-        int bn = 0, cn = 0;
-        principia_ksa_PredictionEnd be, ce;
         // 1000 AU out, where gravity (~1e-8 m/s²) can't blur the Δv.
         principia_ksa_QP deep{{1.5e14, 0, 0}, {0, 1000, 0}};
-        Expect(Predict(e, &deep, t0, t0 + 100, 100000, bt, bp, 50, &bn, &be,
-                       {0, 1, 0}, 1e5, 1e4, 30) == PRINCIPIA_KSA_OK &&
-                   Predict(e, &deep, t0, t0 + 100, 100000, ct, cp, 50, &cn, &ce) ==
-                       PRINCIPIA_KSA_OK,
+        Prediction const burn =
+            Predict(e, &deep, t0, t0 + 100, 100000, 10, {}, {0, 1, 0}, 1e5, 1e4, 30);
+        Prediction const coast = Predict(e, &deep, t0, t0 + 100, 100000);
+        Expect(burn.status == PRINCIPIA_KSA_OK && coast.status == PRINCIPIA_KSA_OK,
                "a prediction under thrust");
-        double const dv = Norm(Minus(bp[bn - 1].p, cp[cn - 1].p));
+        double const dv = Norm(Minus(burn.states[burn.count() - 1].p,
+                                     coast.states[coast.count() - 1].p));
         double const expected = 1e5 / 30 * std::log(1e4 / (1e4 - 3000));
         std::printf("  100 s burn: Δv %.2f m/s (rocket equation %.2f m/s)\n", dv,
                     expected);
         Expect(std::fabs(dv / expected - 1) < 1e-6, "burn Δv matches the rocket equation");
-        Expect(Predict(e, &iss, t0, t0 + 1000, 100000, bt, bp, 50, &bn, &be, iss.p,
-                       1e5, 1e4, 30) == PRINCIPIA_KSA_INVALID_ARGUMENT,
+        Expect(Predict(e, &iss, t0, t0 + 1000, 100000, 10, {}, iss.p, 1e5, 1e4, 30)
+                       .status == PRINCIPIA_KSA_INVALID_ARGUMENT,
                "a burn that would use more than the whole mass → INVALID_ARGUMENT");
+        Expect(Predict(e, &iss, t0, infinity, 100000, 10, {}, iss.p, 1e5, 1e4, 30)
+                       .status == PRINCIPIA_KSA_INVALID_ARGUMENT,
+               "a burn without a time limit → INVALID_ARGUMENT");
       }
-      // Straight down at 1 km/s from 1000 km: hits Earth.
+      // Straight down at 1 km/s from 1000 km: hits Earth, also without a
+      // time limit.
       principia_ksa_QP falling{{earth0.q.x + 7.371e6, earth0.q.y, earth0.q.z},
                                {earth0.p.x - 1000, earth0.p.y, earth0.p.z}};
-      Expect(Predict(e, &falling, t0, t0 + 86400, 100000, times, points, 500,
-                     &count, &end) == PRINCIPIA_KSA_OK &&
-                 end == PRINCIPIA_KSA_PREDICTION_COLLISION && count >= 2 &&
-                 times[count - 1] < t0 + 3600,
-             "a trajectory into Earth ends in a collision, not a crash");
-      std::printf("    (stopped after %.0f s: %s)\n", times[count - 1] - t0,
-                  principia_ksa__LastError());
+      for (double const t_end : {t0 + 86400, infinity}) {
+        Prediction const fall = Predict(e, &falling, t0, t_end, 100000);
+        Expect(fall.status == PRINCIPIA_KSA_OK &&
+                   fall.end == PRINCIPIA_KSA_PREDICTION_COLLISION &&
+                   fall.count() >= 2 && fall.times[fall.count() - 1] < t0 + 3600,
+               "a trajectory into Earth ends in a collision, not a crash");
+        std::printf("    (stopped after %.0f s: %s)\n",
+                    fall.times[fall.count() - 1] - t0, principia_ksa__LastError());
+      }
       // A low orbit with too few steps for its length stops at the step
       // limit, and must not be reported as an impact.
-      Expect(Predict(e, &iss, t0, t0 + 14 * 86400, 2000, times, points, 500,
-                     &count, &end) == PRINCIPIA_KSA_OK &&
-                 end == PRINCIPIA_KSA_PREDICTION_MAX_STEPS && count >= 2 &&
-                 times[count - 1] < t0 + 14 * 86400,
+      Prediction const short_of = Predict(e, &iss, t0, t0 + 14 * 86400, 2000);
+      Expect(short_of.status == PRINCIPIA_KSA_OK &&
+                 short_of.end == PRINCIPIA_KSA_PREDICTION_MAX_STEPS &&
+                 short_of.count() >= 2 &&
+                 short_of.times[short_of.count() - 1] < t0 + 14 * 86400,
              "a step-limited prediction ends at the step limit, not in an impact");
-      std::printf("    (stopped after %.2f d: %s)\n", (times[count - 1] - t0) / 86400,
-                  principia_ksa__LastError());
+      std::printf("    (stopped after %.2f d)\n",
+                  (short_of.times[short_of.count() - 1] - t0) / 86400);
     }
 
     principia_ksa_XYZ a;
@@ -542,14 +577,10 @@ int main(int argc, char** argv) {
     principia_ksa__EphemerisProlong(e, t0 + 86400);
     double const r = 1.7374e6 + 20e3, v = std::sqrt(4.9048695e12 / r);
     principia_ksa_QP llo{{3.844e8 + r, 0, 0}, {0, 1022 + v, 0}}, after;
-    static double times[100];
-    static principia_ksa_QP points[100];
-    int count;
-    principia_ksa_PredictionEnd end;
     Expect(principia_ksa__FlowMassless(e, &llo, t0, t0 + 3 * 3600, &after) ==
                    PRINCIPIA_KSA_OK &&
-               Predict(e, &llo, t0, t0 + 3 * 3600, 10000, times, points, 100,
-                       &count, &end) == PRINCIPIA_KSA_OK,
+               Predict(e, &llo, t0, t0 + 3 * 3600, 10000).status ==
+                   PRINCIPIA_KSA_OK,
            "20 km lunar orbit with the Moon's field (no degree-31 abort)");
     principia_ksa__EphemerisDestroy(e);
   }
@@ -572,14 +603,10 @@ int main(int argc, char** argv) {
       ok = principia_ksa__FlowMassless(e, &leo, far, far + 1500 + i * 0.0137,
                                        &after) == PRINCIPIA_KSA_OK;
     }
-    static double times[16];
-    static principia_ksa_QP points[16];
-    int count;
-    principia_ksa_PredictionEnd end;
     for (int i = 0; i < 20'000 && ok; ++i) {
-      ok = Predict(e, &leo, far, far + 1500 + i * 0.0137, 10000, times, points,
-                   16, &count, &end) == PRINCIPIA_KSA_OK &&
-           end == PRINCIPIA_KSA_PREDICTION_REACHED_END;
+      Prediction const p = Predict(e, &leo, far, far + 1500 + i * 0.0137, 10000);
+      ok = p.status == PRINCIPIA_KSA_OK &&
+           p.end == PRINCIPIA_KSA_PREDICTION_REACHED_END;
     }
     Expect(ok, "70,000 flows ending a tick after their last step (no CHECK abort)");
     principia_ksa__EphemerisDestroy(e);

@@ -141,8 +141,8 @@ internal static class BurnAnchor
                $"(tracks for {Predictor.LatestNodes?.ByBurn.Count ?? 0} nodes), " +
                $"flight plan {Span(plan?.StateTimes)}{(plan != null && Burning(plan, t) ? " (burning then)" : "")}, " +
                $"prediction {Span(coast?.StateTimes)}; {anchor}; showing prediction {Settings.ShowPrediction} " +
-               $"({Settings.PredictionDays:F2} d), flight plan {Settings.ShowFlightPlan} " +
-               $"({Settings.FlightPlanDays:F2} d); last prediction error: {Predictor.LastError ?? "none"}";
+               $"({Settings.PredictionSteps:N0} steps), flight plan {Settings.ShowFlightPlan} " +
+               $"({Settings.PlanSteps:N0} steps per coast); last prediction error: {Predictor.LastError ?? "none"}";
     }
 
     // Logged when KSA's conics and Principia's path put a burn about different

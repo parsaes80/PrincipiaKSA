@@ -16,7 +16,8 @@
 //!                      the JPL check behind PrincipiaSystem's μ convention
 //!
 //!   -Dksa=<folder>      KSA's installation, for the C# references ($KSA_DIR)
-//!   -Dstarmap=<folder>  StarMap's folder (else Borea's, else KSA's mods folder)
+//!   -Dstarmap=<folder>  StarMap's folder (else the one Borea uses, else KSA's
+//!                       mods folder)
 //!   -Dmods=<folder>     where `game` installs (else Borea's active instance,
 //!                       else KSA's mods folder)
 //!   -Dcs                `game` and `run` build and install only the C# mod,
@@ -81,9 +82,9 @@ pub fn build(b: *Build) !void {
     dotnet.addArg("-o");
     const csharp = dotnet.addOutputDirectoryArg("csharp");
     dotnet.has_side_effects = true; // dotnet's own build is incremental.
-    if (!exists(b, b.fmt("{s}/KSA.dll", .{ksa})))
+    if (!hasFile(b, ksa, "KSA.dll"))
         dotnet.step.dependOn(&b.addFail(b.fmt("KSA not found at '{s}': pass -Dksa=<folder> or set KSA_DIR", .{ksa})).step);
-    if (!exists(b, b.fmt("{s}/StarMap.API.dll", .{starmap})))
+    if (!hasFile(b, starmap, "StarMap.API.dll"))
         dotnet.step.dependOn(&b.addFail(b.fmt("StarMap.API.dll not found in '{s}': pass -Dstarmap=<folder>", .{starmap})).step);
 
     // This repository's version, for the package.
@@ -628,22 +629,61 @@ fn home(b: *Build) []const u8 {
     return b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse ".";
 }
 
-// KSA's usual installations.
+// Whether `dir` holds `file`. The configure phase is cached: what it found
+// is tracked, so a change (a launcher updating StarMap) configures again.
+fn hasFile(b: *Build, dir: []const u8, file: []const u8) bool {
+    const path = b.fmt("{s}/{s}", .{ dir, file });
+    b.dependOnFileMetadata(.{ .cwd_relative = path });
+    return exists(b, path);
+}
+
+// A string in the Borea launcher's settings: `key = "value"` in `[section]`
+// (or before any section if it is ""). Tracked as above.
+fn boreaSetting(b: *Build, section: []const u8, key: []const u8) ?[]const u8 {
+    const path = b.fmt("{s}/.local/share/Borea/borea-settings.toml", .{home(b)});
+    b.dependOnFileContents(.{ .cwd_relative = path });
+    const text = std.Io.Dir.cwd().readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch return null;
+    var in_section = section.len == 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            in_section = std.mem.eql(u8, trimmed, b.fmt("[{s}]", .{section}));
+            continue;
+        }
+        if (!in_section or !std.mem.startsWith(u8, trimmed, key)) continue;
+        const rest = std.mem.trim(u8, trimmed[key.len..], " \t");
+        if (rest.len == 0 or rest[0] != '=') continue;
+        const value = std.mem.trim(u8, rest[1..], " \t");
+        if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') return null;
+        // TOML escapes Windows' backslashes.
+        const unescaped = std.mem.replaceOwned(u8, b.allocator, value[1 .. value.len - 1], "\\\\", "\\") catch
+            @panic("OOM");
+        return unescaped;
+    }
+    return null;
+}
+
+// KSA: the Borea launcher's game folder, else its usual installations.
 fn findKsa(b: *Build) []const u8 {
+    if (boreaSetting(b, "", "GameDirectoryPath")) |dir| {
+        if (hasFile(b, dir, "KSA.dll")) return dir;
+    }
     const candidates = [_][]const u8{
         "C:/Program Files/Kitten Space Agency",
         b.fmt("{s}/Games/Ahwoo/Kitten Space Agency", .{home(b)}),
     };
-    for (candidates) |dir| if (exists(b, b.fmt("{s}/KSA.dll", .{dir}))) return dir;
+    for (candidates) |dir| if (hasFile(b, dir, "KSA.dll")) return dir;
     return candidates[candidates.len - 1];
 }
 
-// StarMap: as the Borea launcher installs it, else in KSA's mods folder.
+// StarMap: the one the Borea launcher is set to use, else in KSA's mods
+// folder.
 fn findStarMap(b: *Build) []const u8 {
-    const candidates = [_][]const u8{
-        b.fmt("{s}/.local/share/Borea/Loaders/StarMap/0.4.8", .{home(b)}),
-        b.fmt("{s}/Documents/My Games/Kitten Space Agency/mods/StarMap", .{home(b)}),
-    };
-    for (candidates) |dir| if (exists(b, b.fmt("{s}/StarMap.API.dll", .{dir}))) return dir;
-    return candidates[candidates.len - 1];
+    if (boreaSetting(b, "LoaderInstallations.StarMap", "DirectoryPath")) |dir| {
+        if (hasFile(b, dir, "StarMap.API.dll")) return dir;
+    }
+    const mods = b.fmt("{s}/Documents/My Games/Kitten Space Agency/mods/StarMap", .{home(b)});
+    _ = hasFile(b, mods, "StarMap.API.dll");
+    return mods;
 }

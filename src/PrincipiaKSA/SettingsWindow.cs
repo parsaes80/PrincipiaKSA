@@ -59,8 +59,12 @@ internal static class SettingsWindow
             return;
         }
         ImGui.Checkbox("Show prediction (coasting)", ref Settings.ShowPrediction);
-        ImGui.SliderFloat("Length (days)##prediction", ref Settings.PredictionDays, 0.05f, Settings.MaxDays, "%.2f",
-                          ImGuiSliderFlags.Logarithmic);
+        Selector("Tolerance", "prediction tolerance", ref Settings.PredictionToleranceIndex,
+                 Settings.PredictionTolerances.Length,
+                 Settings.PredictionToleranceNames[Settings.PredictionToleranceIndex]);
+        ImGui.SameLine(0, 24);
+        Selector("Steps", "prediction steps", ref Settings.PredictionStepsIndex,
+                 Settings.PredictionStepChoices.Length, $"{Settings.PredictionSteps:N0}");
         if (Settings.ShowPrediction)
         {
             Summary(Predictor.Latest);
@@ -71,6 +75,24 @@ internal static class SettingsWindow
         }
     }
 
+    // A choice from a list, as Principia's selectors: − and + step through it.
+    private static void Selector(string label, string id, ref int index, int count, string value)
+    {
+        ImGui.Text(label);
+        ImGui.SameLine();
+        if (ImGui.Button($"-##{id}", (float2?)null) && index > 0)
+        {
+            index--;
+        }
+        ImGui.SameLine();
+        if (ImGui.Button($"+##{id}", (float2?)null) && index < count - 1)
+        {
+            index++;
+        }
+        ImGui.SameLine();
+        ImGui.Text(value);
+    }
+
     private static void Summary(Prediction? p)
     {
         if (p == null || p.Times.Length < 2)
@@ -78,13 +100,11 @@ internal static class SettingsWindow
             return;
         }
         double covered = (p.Times[^1] - p.Times[0]) / 86400;
-        string end = p.Impact ? "ends in an impact" : p.End switch
-        {
-            PredictionEnd.ReachedEnd => "full length",
-            PredictionEnd.MaxSteps => $"stopped early: needs over {Settings.MaxSteps:N0} steps, shorten it",
-            _ => "stopped",
-        };
-        ImGui.Text($"{covered:F2} days computed ({end}), {p.ComputeMs:F0} ms");
+        // Steps run out: the usual end.
+        string end = p.Impact ? ", ends in an impact"
+                   : p.End == PredictionEnd.ReachedEnd ? ", stops at ten years ahead"
+                   : "";
+        ImGui.Text($"{covered:F2} days in {p.Steps:N0} steps{end}, {p.ComputeMs:F0} ms");
         if (p.Note != null)
         {
             ImGui.Text(p.Note);
@@ -143,8 +163,12 @@ internal static class SettingsWindow
             return;
         }
         ImGui.Checkbox("Show flight plan", ref Settings.ShowFlightPlan);
-        ImGui.SliderFloat("Length after last burn (days)", ref Settings.FlightPlanDays, 0.05f, Settings.MaxDays,
-                          "%.2f", ImGuiSliderFlags.Logarithmic);
+        Selector("Tolerance", "plan tolerance", ref Settings.PlanToleranceIndex, Settings.PlanTolerances.Length,
+                 Settings.PlanToleranceNames[Settings.PlanToleranceIndex]);
+        ImGui.SameLine(0, 24);
+        // Per coast: between two burns, and after the last.
+        Selector("Steps", "plan steps", ref Settings.PlanStepsIndex, Settings.PlanStepChoices.Length,
+                 $"{Settings.PlanSteps:N0}");
         if (Program.ControlledVehicle is not { } vehicle)
         {
             ImGui.Text("No vessel.");

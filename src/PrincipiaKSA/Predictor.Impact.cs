@@ -8,14 +8,16 @@ internal static partial class Predictor
     // Where a trajectory first meets the surface of the frame's centre body as
     // KSA draws it. Principia integrates through bodies and the samples can be
     // minutes apart, so each stretch that dips below the highest terrain is
-    // integrated again on a fine grid and the crossing interpolated.
+    // walked on a fine grid along the cubic Hermite spline between its two
+    // samples, which keeps within the points' 10 m tolerance of the path
+    // (Ephemeris.DownsamplingTolerance), and the crossing interpolated.
     private static class Impact
     {
-        private const int Points = 4000;       // Per stretch: under 0.3 s apart.
+        private const int Points = 4000;       // Per stretch between two samples.
         private const int MaxStretches = 64;   // An orbit skimming the terrain dips every revolution.
 
         // Ends `trajectory` at its first impact; true if there is one.
-        public static bool Truncate(Ephemeris ephemeris, FrameSpec frame, Trajectory trajectory, Buffers b)
+        public static bool Truncate(Ephemeris ephemeris, FrameSpec frame, Trajectory trajectory)
         {
             int n = trajectory.Times.Count;
             if (n == 0)
@@ -50,7 +52,7 @@ internal static partial class Predictor
                     continue;
                 }
                 stretches++;
-                if (Crossing(ephemeris, centre, surface, trajectory, i, b) is { } hit)
+                if (Crossing(ephemeris, centre, surface, trajectory, i) is { } hit)
                 {
                     Cut(trajectory, i, hit.Time, hit.State);
                     return true;
@@ -78,44 +80,32 @@ internal static partial class Predictor
 
         // The first crossing of the surface between samples i - 1 and i.
         private static (double Time, QP State)? Crossing(Ephemeris ephemeris, int centre, Surface surface,
-                                                         Trajectory trajectory, int i, Buffers b)
+                                                         Trajectory trajectory, int i)
         {
             double t0 = trajectory.Times[i - 1], t1 = trajectory.Times[i];
-            QP s0 = trajectory.States[i - 1];
-            int count;
-            if (trajectory.BurnArcs.Any(a => i > a.Item1 && i <= a.Item2))
-            {
-                // Under thrust: just the two samples.
-                b.Times[0] = t0;
-                b.States[0] = s0;
-                b.Times[1] = t1;
-                b.States[1] = trajectory.States[i];
-                count = 2;
-            }
-            else
-            {
-                (count, _, _) = ephemeris.Predict(
-                    s0, t0, t1, Settings.MaxSteps, double3.Zero, 0, 0, 0, (t1 - t0) / Points,
-                    b.Times, b.States, ReadOnlySpan<int>.Empty, b.Apsides);
-            }
+            int points = t1 > t0 ? Points : 1;
             double previousHeight = double.NaN;
-            for (int k = 0; k < count; k++)
+            double previousTime = t0;
+            QP previousState = trajectory.States[i - 1];
+            for (int k = 0; k <= points; k++)
             {
-                double height = surface.Height(ephemeris, centre, b.Times[k], b.States[k]);
-                if (height >= 0)
+                double t = k == points ? t1 : t0 + (t1 - t0) * k / points;
+                QP state = k == 0 ? trajectory.States[i - 1]
+                         : k == points ? trajectory.States[i]
+                         : Patches.GroundTrack.Interpolate(trajectory.Times, trajectory.States, i, t);
+                double height = surface.Height(ephemeris, centre, t, state);
+                if (height < 0)
                 {
-                    previousHeight = height;
-                    continue;
+                    if (double.IsNaN(previousHeight))
+                    {
+                        return (t, state);
+                    }
+                    double f = Math.Clamp(previousHeight / (previousHeight - height), 0, 1);
+                    return (previousTime + f * (t - previousTime),
+                            new QP(double3.Lerp(previousState.Q.ToDouble3(), state.Q.ToDouble3(), f),
+                                   double3.Lerp(previousState.P.ToDouble3(), state.P.ToDouble3(), f)));
                 }
-                if (double.IsNaN(previousHeight))
-                {
-                    return (b.Times[k], b.States[k]);
-                }
-                double f = Math.Clamp(previousHeight / (previousHeight - height), 0, 1);
-                QP a = b.States[k - 1], c = b.States[k];
-                return (b.Times[k - 1] + f * (b.Times[k] - b.Times[k - 1]),
-                        new QP(double3.Lerp(a.Q.ToDouble3(), c.Q.ToDouble3(), f),
-                               double3.Lerp(a.P.ToDouble3(), c.P.ToDouble3(), f)));
+                (previousHeight, previousTime, previousState) = (height, t, state);
             }
             return null;
         }

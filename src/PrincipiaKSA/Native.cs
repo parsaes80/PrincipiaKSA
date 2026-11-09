@@ -193,12 +193,15 @@ internal static unsafe partial class Native
     public static partial Status FlowMassless(IntPtr ephemeris, in QP initial, double t0, double t1,
                                               out QP finalState);
 
-    [LibraryImport(LibraryName, EntryPoint = "principia_ksa__PredictMasslessDetailed")]
-    public static partial Status PredictMasslessDetailed(IntPtr ephemeris, in QP initial, double t0, double tEnd,
-                                                         int maxSteps, XYZ thrustDirection, double thrust,
-                                                         double initialMass, double massFlow, double sampleInterval,
-                                                         double* times, QP* states, int capacity, out int count,
-                                                         int* apsisBodies, int apsisBodyCount, Apsis* apsides,
-                                                         int apsisCapacity, out int apsisCount,
-                                                         out PredictionEnd end);
+    [LibraryImport(LibraryName, EntryPoint = "principia_ksa__Predict")]
+    public static partial Status Predict(IntPtr ephemeris, in QP initial, double t0, double tEnd, long maxSteps,
+                                         double lengthTolerance, double speedTolerance, XYZ thrustDirection,
+                                         double thrust, double initialMass, double massFlow,
+                                         double downsamplingTolerance, int* apsisBodies, int apsisBodyCount,
+                                         int apsisCapacity, out double* times, out QP* states, out int count,
+                                         out Apsis* apsides, out int apsisCount, out long steps,
+                                         out PredictionEnd end);
+
+    [LibraryImport(LibraryName, EntryPoint = "principia_ksa__Free")]
+    public static partial void Free(void* array);
 }

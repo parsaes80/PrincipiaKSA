@@ -10,8 +10,9 @@ ported it to KSA. N-body gravity offers much more depth to game and is very fun 
 
 - **Planets and moons**: move under Principia's n-body integration phsyics. They are no longer on Kepler's rails and move more accurattly to real-life.
 - **Vessels**: vessels follow Principia's predicted path in space according to N-Body gravity and free from Kepler's rails, but other parts of the physics are untoched.
-- **Predictions**: Instead of fixed orbits Principia integrates the path of the vessel through time, and this shows up as a prediction of where you will be in a certatin amount of time, 
-    this path is shown in orange. 
+- **Predictions**: Instead of fixed orbits Principia integrates the path of the vessel through time, and this shows up as a prediction of where you will be,
+    this path is shown in orange. As in Principia, how far it reaches is set by its number of integration steps and its tolerance, not by a time:
+    the PrincipiaKSA window has Tolerance and Steps for the prediction and for the flight plan (its steps are per coast between burns). 
 - **Maneuver nodes**: Principia of fully compatible with KSA's own manuver nodes and they work the same way as the base game.
 - **Spheres of influence**: Since N-body gravity doesn't use SOI's they are only used for maneuver nodes and making sure they are in the right frame.
 - **Auto-burn**: Auto burn and flight plans also work to a high level of accuracy with Principia's physics.

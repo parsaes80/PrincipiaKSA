@@ -6,10 +6,13 @@ namespace PrincipiaKSA;
 
 internal static partial class Predictor
 {
-    // Coasts to each burn's ignition, burns until its Δv is reached (staging
-    // through the engine phases), and coasts on for the plan's length after
-    // the last burn. Also computes the nodes' approach tracks.
-    private static Prediction? ComputePlan(PrincipiaSystem system, Request r, Buffers b, out NodeTracks? nodes)
+    // Coasts to each burn's ignition (each coast up to the plan's steps),
+    // burns until its Δv is reached (staging through the engine phases), and
+    // after the last burn coasts on until its steps run out, as Principia's
+    // flight plan. A coast that runs out of steps before the next burn ends
+    // the plan there, as Principia's anomalous manœuvres. Also computes the
+    // nodes' approach tracks.
+    private static Prediction? ComputePlan(PrincipiaSystem system, Request r, out NodeTracks? nodes)
     {
         var sw = Stopwatch.StartNew();
         Ephemeris ephemeris = system.Ephemeris;
@@ -35,9 +38,11 @@ internal static partial class Predictor
             windows[node.Burn] = node.Window;
         }
         int segmentStart = 0;
-        double span = (r.Burns.Length > 0 ? r.Burns[^1].Impulse : r.Time) - r.Time + r.PlanHorizon;
-        double interval = SampleInterval(Math.Max(span, 1));
-        string? note = r.Phases.Length == 0 ? "no active engine: burns shown as impulses" : null;
+        var notes = new List<string>();
+        if (r.Phases.Length == 0)
+        {
+            notes.Add("no active engine: burns shown as impulses");
+        }
         int phase = 0;
         double mass = r.Phases.Length > 0 ? r.Phases[0].StartMass : r.Mass;
         double phaseUsed = 0;  // Seconds burned in the current phase.
@@ -49,11 +54,14 @@ internal static partial class Predictor
             double duration = Duration(r.Phases, phase, mass, phaseUsed, burn.DeltaV);
             double ignition = burn.Ignition ?? burn.Impulse - duration / 2;
             segmentStart = trajectory.Times.Count - 1;
-            bool reached = trajectory.Extend(ephemeris, Math.Max(ignition, r.Time), Settings.MaxSteps, interval,
-                                             r.ApsisBodies, b);
+            trajectory.Extend(ephemeris, Math.Max(ignition, r.Time), r.PlanSteps, r.PlanTolerance, r.ApsisBodies);
             pending.Add((burnNumber - 1, segmentStart, trajectory.LastTime));
-            if (!reached)
+            if (!trajectory.Reached)
             {
+                if (trajectory.End == PredictionEnd.MaxSteps)
+                {
+                    notes.Add($"ran out of steps before burn {burnNumber}: raise Steps");
+                }
                 break;
             }
             trajectory.CollectApsides = true;
@@ -95,8 +103,13 @@ internal static partial class Predictor
                 {
                     break;
                 }
-                ok = trajectory.Extend(ephemeris, trajectory.LastTime + seconds, Settings.MaxSteps, interval,
-                                       r.ApsisBodies, b, direction, e.Thrust, mass, e.MassFlow);
+                trajectory.Extend(ephemeris, trajectory.LastTime + seconds, BurnSteps, BurnTolerance, r.ApsisBodies,
+                                  direction, e.Thrust, mass, e.MassFlow);
+                ok = trajectory.Reached;
+                if (!ok && trajectory.End == PredictionEnd.MaxSteps)
+                {
+                    notes.Add($"burn {burnNumber} needs over {BurnSteps:N0} steps: the plan stops there");
+                }
                 remaining -= DeltaV(e.Thrust, e.MassFlow, mass, seconds);
                 mass -= e.MassFlow * seconds;
                 phaseUsed += seconds;
@@ -121,36 +134,53 @@ internal static partial class Predictor
             segmentStart = trajectory.Times.Count - 1;
             if (r.Burns.Length > 0)
             {
-                trajectory.Extend(ephemeris, trajectory.LastTime + r.PlanHorizon, Settings.MaxSteps, interval,
-                                  r.ApsisBodies, b);
+                trajectory.Extend(ephemeris, r.Time + MaxSpan, r.PlanSteps, r.PlanTolerance, r.ApsisBodies);
             }
             if (burnNumber == r.Burns.Length)
             {
                 pending.Add((r.Burns.Length, segmentStart, trajectory.LastTime));
             }
         }
+        // Each node's track at once, a thread-pool task each: the plan they
+        // start from is done.
+        var jobs = new List<(NodeBurn Node, Task<NodeTrack?> Track)>();
         foreach (var (segment, startIndex, shared) in pending)
         {
-            AddNodeTracks(system, r, segments[segment], segment, trajectory, startIndex, shared, b, tracks);
+            foreach (NodeBurn node in segments[segment] ?? [])
+            {
+                jobs.Add((node, Task.Run(() => NodeTrackOf(system, r, node, segment, trajectory, startIndex,
+                                                           shared))));
+            }
+        }
+        foreach (var (node, job) in jobs)
+        {
+            try
+            {
+                if (job.Result is { } track)
+                {
+                    tracks[node.Burn] = track;
+                }
+            }
+            catch (AggregateException e)
+            {
+                Log.WarnOnce("[predict] a maneuver node's track", e.InnerException ?? e);
+            }
         }
         nodes = tracks.Count > 0 ? new NodeTracks(r.Vehicle, r.Frame, tracks, windows) : null;
         return r.Burns.Length > 0
-            ? Finish(system, r, trajectory, isFlightPlan: true, Math.Max(firstIgnition, 0), note, sw, b)
+            ? Finish(system, r, trajectory, isFlightPlan: true, Math.Max(firstIgnition, 0),
+                     notes.Count > 0 ? string.Join("; ", notes) : null, sw)
             : null;
     }
 
-    // The approach track shared by a segment's nodes: integrated without burns
-    // from the plan's last coast sample before their windows, through them.
-    // Up to `shared` (the next burn's ignition) it is the plan itself; past
-    // it, the path without that burn, which nothing else draws.
-    private static void AddNodeTracks(PrincipiaSystem system, Request r, List<NodeBurn>? nodes, int segment,
-                                      Trajectory trajectory, int segmentStart, double shared, Buffers b,
-                                      Dictionary<Burn, NodeTrack> tracks)
+    // A node's approach track: integrated without burns from the plan's last
+    // coast sample before its window, through it. Up to `shared` (the next
+    // burn's ignition) it is the plan itself; past it, the path without that
+    // burn, which nothing else draws. The plan is only read, by any number
+    // of these at once.
+    private static NodeTrack? NodeTrackOf(PrincipiaSystem system, Request r, NodeBurn node, int segment,
+                                          Trajectory trajectory, int segmentStart, double shared)
     {
-        if (nodes == null)
-        {
-            return;
-        }
         Ephemeris ephemeris = system.Ephemeris;
         double start, t0;
         QP s0;
@@ -164,7 +194,7 @@ internal static partial class Predictor
         {
             int first = Math.Clamp(segmentStart, 0, trajectory.Times.Count - 1);
             start = trajectory.Times[first];
-            double lo = Math.Max(start, Math.Min(nodes.Min(n => n.Time - n.Window), shared));
+            double lo = Math.Max(start, Math.Min(node.Time - node.Window, shared));
             int k = first;
             while (k + 1 < trajectory.Times.Count && trajectory.Times[k + 1] <= lo)
             {
@@ -173,27 +203,22 @@ internal static partial class Predictor
             t0 = trajectory.Times[k];
             s0 = trajectory.States[k];
         }
-        double hi = nodes.Max(n => n.Time + n.Window);
+        double hi = node.Time + node.Window;
         if (!(hi > t0))
         {
-            return;
+            return null;
         }
-        (int count, _, _) = ephemeris.Predict(
-            s0, t0, hi, Settings.MaxSteps, double3.Zero, 0, 0, 0, SampleInterval(hi - t0),
-            b.Times, b.States, ReadOnlySpan<int>.Empty, b.Apsides);
+        // At the plan's tolerance, to the end of the window.
+        Ephemeris.PredictionResult p = ephemeris.Predict(s0, t0, hi, Settings.MaxSteps, r.PlanTolerance,
+                                                         double3.Zero, 0, 0, 0, ReadOnlySpan<int>.Empty);
+        int count = p.Times.Length;
         if (count < 2)
         {
-            return;
+            return null;
         }
-        double[] times = b.Times.AsSpan(0, count).ToArray();
-        QP[] states = b.States.AsSpan(0, count).ToArray();
-        (Line line, _, _) = Draw(system, r.Frame, times, states, count);
-        var track = new NodeTrack(start, line.Times, line.Coordinates, line.Stretches, segment, shared, times,
-                                  states);
-        foreach (NodeBurn node in nodes)
-        {
-            tracks[node.Burn] = track;
-        }
+        (Line line, _, _) = Draw(system, r.Frame, p.Times, p.States, count);
+        return new NodeTrack(start, line.Times, line.Coordinates, line.Stretches, segment, shared, p.Times,
+                             p.States);
     }
 
     // A burn's direction: its Δv in the prograde/normal/radial frame of
