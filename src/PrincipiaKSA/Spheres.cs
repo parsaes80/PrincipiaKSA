@@ -69,4 +69,7 @@ internal sealed class Spheres
 
     // Whether `body` is a child of `of`, whose sphere it is entered from.
     public bool IsChild(int body, int of) => _parent[body] == of;
+
+    // The body whose sphere `body`'s is in; -1 for none.
+    public int ParentOf(int body) => _parent[body];
 }

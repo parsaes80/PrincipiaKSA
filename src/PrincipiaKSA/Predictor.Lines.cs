@@ -55,7 +55,28 @@ internal static partial class Predictor
         // stretch) and enters the next (at the start of the next), and on an
         // encounter, where the body will be then, as KSA marks its patches.
         Spheres spheres = Spheres.Of(system);
+        // Each visit to a sphere is numbered: an encounter starts the next,
+        // the escape ending it shares its number. Spheres nest, so leaving a
+        // moon's back into its planet's is no new visit of the planet; where
+        // the line starts, that body's sphere and those around it are visit 1.
+        var visits = new Dictionary<int, int>();
+        if (line.Stretches.Length > 0 && system.IndexOf(line.Stretches[0].Body) is int first)
+        {
+            for (int b = first; b >= 0; b = spheres.ParentOf(b))
+            {
+                visits[b] = 1;
+            }
+        }
+        var numbered = new List<(Crossing Crossing, bool Encounter, int Body, int Visit)>();
         foreach (Crossing c in crossings)
+        {
+            bool encounter = spheres.IsChild(c.To, c.From);
+            int body = encounter ? c.To : c.From;
+            int visit = visits.GetValueOrDefault(body) + (encounter ? 1 : 0);
+            visits[body] = Math.Max(visit, 1);
+            numbered.Add((c, encounter, body, Math.Max(visit, 1)));
+        }
+        foreach (var (c, encounter, body, visit) in numbered)
         {
             int into = line.StretchAt(c.Time);
             if (into == 0)
@@ -64,9 +85,10 @@ internal static partial class Predictor
             }
             Astronomical from = system.Bodies[c.From], to = system.Bodies[c.To];
             // As KSA names them: into a moon's sphere, "Luna Encounter"; out
-            // of it, "Luna Escape" (and "Earth Escape" out to the Sun).
-            bool encounter = spheres.IsChild(c.To, c.From);
-            string name = encounter ? $"{to.Id} Encounter" : $"{from.Id} Escape";
+            // of it, "Luna Escape" (and "Earth Escape" out to the Sun); with
+            // the visit's number where the line visits that sphere twice or more.
+            string number = visits[body] > 1 ? $" {visit}" : "";
+            string name = encounter ? $"{to.Id} Encounter{number}" : $"{from.Id} Escape{number}";
             string detail = encounter ? $"into {to.Id}'s sphere of influence"
                                       : $"out of {from.Id}'s sphere of influence, into {to.Id}'s";
             double3 q = c.State.Q.ToDouble3();
@@ -77,8 +99,8 @@ internal static partial class Predictor
             if (encounter && line.Stretches[into - 1].Frame != line.Stretches[into].Frame)
             {
                 markers.Add(Marker(Prediction.MarkerKind.Body, c.Time, ephemeris.State(c.To, c.Time).Q.ToDouble3(),
-                                   $"{to.Id} at the encounter", to.Id, detail: "at the encounter", s: into - 1,
-                                   listed: false));
+                                   $"{to.Id} at the encounter{number}", to.Id,
+                                   detail: $"at the encounter{number}", s: into - 1, listed: false));
             }
         }
 
@@ -206,11 +228,11 @@ internal static partial class Predictor
     // Where a path goes from one sphere of influence into another.
     private readonly record struct Crossing(double Time, QP State, int From, int To);
 
-    // A path's points to draw, as KSA draws its patches: split where it
-    // changes sphere of influence, at the crossing found between the
-    // samples, each stretch in its frame (Stretch: the plotting frame in the
-    // centre's sphere, else about the stretch's body), densified; with
-    // `ghosts`, the latter also in the plotting frame. Also each sample's
+    // A path's points to draw: split where it changes sphere of influence, at
+    // the crossing found between the samples, each stretch in its frame
+    // (Stretch: about the body met for an encounter, as KSA draws its
+    // encounter patches, else the plotting frame), densified; with `ghosts`,
+    // an encounter also dimmer in the plotting frame. Also each sample's
     // index among the points.
     private static (Line Line, int[] Index, List<Crossing> Crossings) Draw(
         PrincipiaSystem system, FrameSpec plot, IReadOnlyList<double> times, IReadOnlyList<QP> states, int n,
@@ -236,6 +258,9 @@ internal static partial class Predictor
         var pieceStates = new List<QP>();
         var pieceSamples = new List<int>();
         int pieceBody = n > 0 ? body[0] : plot.CentreIndex;
+        // Whether the stretch being built began with an encounter: from a
+        // body's sphere into one of its moons' (or planets').
+        bool pieceEncounter = false;
 
         void Add(double t, QP state, int sample)
         {
@@ -245,7 +270,11 @@ internal static partial class Predictor
         }
         void Close(bool closed)
         {
-            FrameSpec frame = pieceBody != plot.CentreIndex
+            // About its body only for an encounter, as KSA draws the
+            // encounter patch about the body met; anything else (where the
+            // vessel is now, back out of an encounter, an escape) in the
+            // plotting frame chosen.
+            FrameSpec frame = pieceEncounter && pieceBody != plot.CentreIndex
                 ? new FrameSpec(PlotFrame.BodyCentred, system.Bodies[pieceBody], pieceBody, null, -1)
                 : plot;
             int m = pieceTimes.Count;
@@ -317,6 +346,7 @@ internal static partial class Predictor
                 Add(hi, at, -1);
                 Close(closed: true);
                 pieceBody = body[i];
+                pieceEncounter = spheres.IsChild(body[i], body[i - 1]);
                 Add(hi, at, -1);
             }
             Add(times[i], states[i], i);

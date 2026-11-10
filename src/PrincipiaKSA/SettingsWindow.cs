@@ -46,9 +46,21 @@ internal static class SettingsWindow
         }
         else
         {
+            // How far ahead the lines reach now, as they change (not the
+            // planets' ephemeris, which only grows).
             double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
-            double ahead = (system.Ephemeris.TimeRange.TMax - now) / 86400;
-            ImGui.Text($"n-body gravity: {system.Links.Count()} bodies, integrated {ahead:F1} days ahead");
+            var reach = new List<string>();
+            void Reach(Prediction? p, bool shown, string what)
+            {
+                if (shown && p is { Times.Length: > 0 } && p.Vehicle == Program.ControlledVehicle)
+                {
+                    reach.Add($"{Math.Max(0, p.Times[^1] - now) / 86400:F1} d ({what})");
+                }
+            }
+            Reach(Predictor.Latest, Settings.ShowPrediction, "prediction");
+            Reach(Predictor.LatestPlan, Settings.ShowFlightPlan, "flight plan");
+            ImGui.Text($"n-body gravity: {system.Links.Count()} bodies" +
+                       (reach.Count > 0 ? $", lines reach {string.Join(" / ", reach)}" : ""));
         }
     }
 
@@ -136,23 +148,113 @@ internal static class SettingsWindow
         }
     }
 
+    // A body to plot about, as KSA's system holds them: each star, then its
+    // planets by distance, then "Asteroids & Dwarf Planets" by distance. A
+    // body with moons is a menu item of its own: clicked, it is picked;
+    // hovered, it opens its moons by distance.
     private static void BodyCombo(PrincipiaSystem system, string label, ref string? selection, string automatic)
     {
-        if (ImGui.BeginCombo(label, selection ?? automatic))
+        if (!ImGui.BeginCombo(label, selection ?? automatic))
         {
-            if (ImGui.Selectable(automatic, selection == null))
+            return;
+        }
+        if (ImGui.Selectable(automatic, selection == null))
+        {
+            selection = null;
+        }
+        IReadOnlyList<Astronomical> bodies = system.Bodies;
+        string? current = selection, picked = null;
+        bool close = false;
+        void Pick(Astronomical body)
+        {
+            if (ImGui.Selectable(body.Id, current == body.Id))
             {
-                selection = null;
+                picked = body.Id;
             }
-            foreach (Astronomical body in system.Bodies)
+        }
+        // A body, opening its moons on hover if it has any.
+        void Item(Astronomical body)
+        {
+            List<Astronomical> moons = Moons(bodies, body);
+            if (moons.Count == 0)
             {
-                if (ImGui.Selectable(body.Id, selection == body.Id))
+                Pick(body);
+                return;
+            }
+            bool open = ImGui.BeginMenu(body.Id);
+            if (ImGui.IsItemClicked())
+            {
+                picked = body.Id;
+                close = true;  // A menu item doesn't close the drop-down by itself.
+            }
+            if (open)
+            {
+                foreach (Astronomical moon in moons)
                 {
-                    selection = body.Id;
+                    Pick(moon);
+                }
+                ImGui.EndMenu();
+            }
+        }
+        foreach (Astronomical root in bodies.Where(b => ParentIn(bodies, b) == null))
+        {
+            ImGui.Separator();
+            Pick(root);
+            List<Astronomical> orbiting = Orbiting(bodies, root).ToList();
+            foreach (Astronomical planet in orbiting.Where(b => !IsSmall(b)))
+            {
+                Item(planet);
+            }
+            List<Astronomical> small = orbiting.Where(IsSmall).ToList();
+            if (small.Count > 0)
+            {
+                ImGui.Separator();
+                if (ImGui.BeginMenu("Asteroids & Dwarf Planets"))
+                {
+                    foreach (Astronomical body in small)
+                    {
+                        Item(body);
+                    }
+                    ImGui.EndMenu();
                 }
             }
-            ImGui.EndCombo();
         }
+        if (picked != null)
+        {
+            selection = picked;
+        }
+        if (close)
+        {
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndCombo();
+    }
+
+    // Lighter than any planet (Mercury: 3.3e23 kg): a dwarf planet or an
+    // asteroid (Pluto, Eris: ~1.5e22 kg; Ceres: 9.4e20 kg).
+    private const double PlanetMass = 1e23;
+
+    private static bool IsSmall(Astronomical body) => body is IParentBody { Mass: < PlanetMass };
+
+    // The body `body` orbits, if Principia has it.
+    private static Astronomical? ParentIn(IReadOnlyList<Astronomical> bodies, Astronomical body) =>
+        body is IOrbiter { Parent: Astronomical parent } && bodies.Contains(parent) ? parent : null;
+
+    // What orbits `parent`, nearest first.
+    private static IEnumerable<Astronomical> Orbiting(IReadOnlyList<Astronomical> bodies, Astronomical parent) =>
+        bodies.Where(b => ReferenceEquals(ParentIn(bodies, b), parent))
+              .OrderBy(b => b is IOrbiter o ? o.Orbit.SemiMajorAxis : 0);
+
+    // A planet's moons, nearest first, each followed by its own.
+    private static List<Astronomical> Moons(IReadOnlyList<Astronomical> bodies, Astronomical planet)
+    {
+        var moons = new List<Astronomical>();
+        foreach (Astronomical moon in Orbiting(bodies, planet))
+        {
+            moons.Add(moon);
+            moons.AddRange(Moons(bodies, moon));
+        }
+        return moons;
     }
 
     // KSA's planned burns, read-only: KSA's burn tool is the planner.
@@ -228,6 +330,8 @@ internal static class SettingsWindow
         ImGui.Text("Logs to mods/PrincipiaKSA/PrincipiaKSA.log");
     }
 
+    private const int VisibleEvents = 10;
+
     private static void DrawEvents()
     {
         if (!ImGui.CollapsingHeader("Upcoming", ImGuiTreeNodeFlags.DefaultOpen))
@@ -256,9 +360,22 @@ internal static class SettingsWindow
         }
         if (Settings.ShowPrediction) Add(Predictor.Latest, "");
         if (Settings.ShowFlightPlan) Add(Predictor.LatestPlan, "Plan: ");
-        foreach (var (time, text) in events.OrderBy(e => e.Time).Take(12))
+        if (events.Count == 0)
         {
-            ImGui.Text($"{text}  in {MapOverlay.Duration(time - now)}");
+            return;
         }
+        // Every event, in a box as tall as them up to VisibleEvents lines,
+        // scrolling beyond.
+        float line = ImGui.GetTextLineHeightWithSpacing();
+        float height = Math.Min(events.Count, VisibleEvents) * line + ImGui.GetStyle().WindowPadding.Y * 2;
+        if (ImGui.BeginChild("##upcoming", new float2?(new float2(0, height)), ImGuiChildFlags.Borders,
+                             ImGuiWindowFlags.None))
+        {
+            foreach (var (time, text) in events.OrderBy(e => e.Time))
+            {
+                ImGui.Text($"{text}  in {MapOverlay.Duration(time - now)}");
+            }
+        }
+        ImGui.EndChild();
     }
 }

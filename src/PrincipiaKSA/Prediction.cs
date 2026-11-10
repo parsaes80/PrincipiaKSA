@@ -4,12 +4,13 @@ using KSA;
 namespace PrincipiaKSA;
 
 // A part of a drawn line inside one body's sphere of influence (KSA's
-// rules), points Start to End, drawn in Frame: the plotting frame where the
-// body is its centre, else about the body itself, non-rotating, as KSA draws
-// its patches. From and To are its times; Closed, that it ends at a sphere
-// crossing (not where the line ends). Drawn about another body, it also has
-// its own points in the plotting frame (GhostTimes, Ghost), drawn dimmer, so
-// the path shows through in the plotting frame too.
+// rules), points Start to End, drawn in Frame: for an encounter (entering a
+// moon's sphere from its planet's, say) about the body met, non-rotating, as
+// KSA draws its encounter patches, unless that body is the plotting frame's
+// centre; else in the plotting frame. From and To are its times; Closed,
+// that it ends at a sphere crossing (not where the line ends). An encounter
+// drawn about its body also has its points in the plotting frame
+// (GhostTimes, Ghost), drawn dimmer, so the path shows through there too.
 internal sealed record Stretch(int Start, int End, FrameSpec Frame, Astronomical Body, double From, double To,
                                bool Closed, double[]? GhostTimes = null, double3[]? Ghost = null);
 
