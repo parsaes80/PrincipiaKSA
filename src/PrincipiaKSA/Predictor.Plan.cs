@@ -134,7 +134,8 @@ internal static partial class Predictor
             segmentStart = trajectory.Times.Count - 1;
             if (r.Burns.Length > 0)
             {
-                trajectory.Extend(ephemeris, r.Time + MaxSpan, r.PlanSteps, r.PlanTolerance, r.ApsisBodies);
+                trajectory.Extend(ephemeris, double.PositiveInfinity, r.PlanSteps, r.PlanTolerance,
+                                  r.ApsisBodies);
             }
             if (burnNumber == r.Burns.Length)
             {

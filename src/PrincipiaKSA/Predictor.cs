@@ -38,9 +38,6 @@ internal static partial class Predictor
     private const long BurnSteps = 1000;
     private const double BurnTolerance = 1;
 
-    // How far ahead any line may go, steps left or not: the ephemeris it
-    // needs is prolonged that far, which costs memory (ten years).
-    private const double MaxSpan = 3652.5 * 86400;
     private static readonly long MinInterval = Stopwatch.Frequency / 120;
 
     // The prediction's and the flight plan's threads: permanent, as they run
@@ -522,7 +519,8 @@ internal static partial class Predictor
     {
         var sw = Stopwatch.StartNew();
         var trajectory = new Trajectory(r.State, r.Time);
-        trajectory.Extend(system.Ephemeris, r.Time + MaxSpan, r.CoastSteps, r.CoastTolerance, r.ApsisBodies);
+        trajectory.Extend(system.Ephemeris, double.PositiveInfinity, r.CoastSteps, r.CoastTolerance,
+                          r.ApsisBodies);
         return Finish(system, r, trajectory, isFlightPlan: false, firstIgnition: 0, note: null, sw);
     }
 }

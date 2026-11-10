@@ -112,10 +112,8 @@ internal static class SettingsWindow
             return;
         }
         double covered = (p.Times[^1] - p.Times[0]) / 86400;
-        // Steps run out: the usual end.
-        string end = p.Impact ? ", ends in an impact"
-                   : p.End == PredictionEnd.ReachedEnd ? ", stops at ten years ahead"
-                   : "";
+        // Otherwise its steps ran out: the usual end, there is no time limit.
+        string end = p.Impact ? ", ends in an impact" : "";
         ImGui.Text($"{covered:F2} days in {p.Steps:N0} steps{end}, {p.ComputeMs:F0} ms");
         if (p.Note != null)
         {
