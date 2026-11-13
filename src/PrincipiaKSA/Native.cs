@@ -102,13 +102,15 @@ internal static unsafe partial class Native
 
     private static IntPtr _handle;
 
-    // Built for AVX and FMA only; never loaded on a CPU without them, where it
-    // would crash the game.
+    // Built for AVX and FMA (or Apple Silicon) only; never loaded on a CPU
+    // without them, where it would crash the game.
     public static readonly string LibraryFile =
-        OperatingSystem.IsWindows() ? $"{LibraryName}_AVX.dll" : $"lib{LibraryName}_AVX.so";
+        OperatingSystem.IsWindows() ? $"{LibraryName}_AVX.dll" :
+        OperatingSystem.IsMacOS() ? $"lib{LibraryName}_arm64.dylib" : $"lib{LibraryName}_AVX.so";
 
-    public static bool CpuHasAvxFma =>
-        System.Runtime.Intrinsics.X86.Avx.IsSupported && System.Runtime.Intrinsics.X86.Fma.IsSupported;
+    public static bool CpuSupported => OperatingSystem.IsMacOS()
+        ? RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+        : System.Runtime.Intrinsics.X86.Avx.IsSupported && System.Runtime.Intrinsics.X86.Fma.IsSupported;
 
     private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath)
     {
@@ -118,9 +120,9 @@ internal static unsafe partial class Native
         }
         if (_handle == IntPtr.Zero)
         {
-            if (!CpuHasAvxFma)
+            if (!CpuSupported)
             {
-                throw new DllNotFoundException($"{LibraryFile} needs a CPU with AVX and FMA");
+                throw new DllNotFoundException($"{LibraryFile} needs a CPU with AVX and FMA, or Apple Silicon");
             }
             string path = Path.Combine(Path.GetDirectoryName(assembly.Location) ?? ".", LibraryFile);
             Log.Info($"Loading native library {path}");

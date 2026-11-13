@@ -13,6 +13,11 @@
 
 #include "../principia_ksa.h"
 
+#if defined(__aarch64__)
+#pragma STDC FP_CONTRACT OFF  // As the library is built.
+#include <immintrin.h>
+#endif
+
 namespace {
 
 int failures = 0;
@@ -106,6 +111,53 @@ void Log(int const severity, char const* const message) {
   std::printf("  principia[%d]: %s\n", severity, message);
 }
 
+#if defined(__aarch64__)
+// Fused multiply-adds round once: a·a − p is 2⁻²ᵏ for a = 1 + 2⁻ᵏ.
+void CheckFusedMultiplyAdd() {
+  std::printf("fused multiply-add:\n");
+  double a[4], p[4], minus_p[4], e[4];
+  for (int i = 0; i < 4; ++i) {
+    a[i] = 1 + std::ldexp(1.0, -30 - i);
+    p[i] = a[i] * a[i];
+    minus_p[i] = -p[i];
+    e[i] = std::ldexp(1.0, -60 - 2 * i);
+  }
+  __m128d const a_pd = _mm_loadu_pd(a);
+  __m128d const p_pd = _mm_loadu_pd(p);
+  __m128d const minus_p_pd = _mm_loadu_pd(minus_p);
+  auto sd = [&](__m128d const r, double const sign) {
+    double lanes[2];
+    _mm_storeu_pd(lanes, r);
+    return lanes[0] == sign * e[0] && lanes[1] == a[1];
+  };
+  auto pd = [&](__m128d const r, double const sign) {
+    double lanes[2];
+    _mm_storeu_pd(lanes, r);
+    return lanes[0] == sign * e[0] && lanes[1] == sign * e[1];
+  };
+  auto pd256 = [&](__m256d const r, double const sign) {
+    double lanes[4];
+    _mm256_storeu_pd(lanes, r);
+    for (int i = 0; i < 4; ++i) {
+      if (lanes[i] != sign * e[i]) return false;
+    }
+    return true;
+  };
+  Expect(sd(_mm_fmadd_sd(a_pd, a_pd, minus_p_pd), 1) && sd(_mm_fmsub_sd(a_pd, a_pd, p_pd), 1) &&
+             sd(_mm_fnmadd_sd(a_pd, a_pd, p_pd), -1) && sd(_mm_fnmsub_sd(a_pd, a_pd, minus_p_pd), -1),
+         "_mm_f(n)madd/msub_sd round once and keep the upper lane");
+  Expect(pd(_mm_fmadd_pd(a_pd, a_pd, minus_p_pd), 1) && pd(_mm_fmsub_pd(a_pd, a_pd, p_pd), 1) &&
+             pd(_mm_fnmadd_pd(a_pd, a_pd, p_pd), -1) && pd(_mm_fnmsub_pd(a_pd, a_pd, minus_p_pd), -1),
+         "_mm_f(n)madd/msub_pd round once");
+  __m256d const a4 = _mm256_loadu_pd(a);
+  __m256d const p4 = _mm256_loadu_pd(p);
+  __m256d const minus_p4 = _mm256_loadu_pd(minus_p);
+  Expect(pd256(_mm256_fmadd_pd(a4, a4, minus_p4), 1) && pd256(_mm256_fmsub_pd(a4, a4, p4), 1) &&
+             pd256(_mm256_fnmadd_pd(a4, a4, p4), -1) && pd256(_mm256_fnmsub_pd(a4, a4, minus_p4), -1),
+         "_mm256_f(n)madd/msub_pd round once");
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -116,6 +168,9 @@ int main(int argc, char** argv) {
     std::printf("usage: smoke_test path/to/sol_gravity_model.proto.txt\n");
     return 2;
   }
+#if defined(__aarch64__)
+  CheckFusedMultiplyAdd();
+#endif
 
   double const au = 1.495978707e11;
   principia_ksa_Body const bodies[] = {

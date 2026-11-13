@@ -23,10 +23,10 @@ public class PrincipiaKSA
         Log.Info($"KSA.dll version: {typeof(Mod).Assembly.GetName().Version}");
         Log.Info($"Running on .NET {Environment.Version}, {Environment.OSVersion}");
         // Only the AVX/FMA build ships; without them, leave KSA unmodded.
-        if (!Native.CpuHasAvxFma)
+        if (!Native.CpuSupported)
         {
-            Log.Error("PrincipiaKSA needs a CPU with AVX and FMA (Intel Haswell / AMD Zen or later); " +
-                      "this one lacks them, so the mod is disabled");
+            Log.Error("PrincipiaKSA needs a CPU with AVX and FMA (Intel Haswell / AMD Zen or later) " +
+                      "or Apple Silicon; this one lacks them, so the mod is disabled");
             return;
         }
 

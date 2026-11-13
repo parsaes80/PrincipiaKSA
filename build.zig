@@ -1,4 +1,4 @@
-//! PrincipiaKSA's build, with Zig alone, for Linux and Windows from either.
+//! PrincipiaKSA's build, with Zig alone, for Linux, Windows and macOS from any of them.
 //!
 //! Principia's core and the parts of its dependencies it needs (extern/,
 //! pinned git submodules) are compiled from source, as are protoc (for
@@ -28,7 +28,8 @@ const std = @import("std");
 const Build = std.Build;
 const LazyPath = Build.LazyPath;
 
-const Platform = enum { linux, windows };
+const Platform = enum { linux, windows, macos };
+const platforms = [_]Platform{ .linux, .windows, .macos };
 
 // The CPU features code is compiled for: the dependencies as Principia's
 // install_deps.sh builds them (SSE4.1), Principia's core and CORE-MATH as
@@ -49,6 +50,7 @@ pub fn build(b: *Build) !void {
     // built for this machine from the same protobuf, and its version.
     const host: Platform = switch (b.graph.host.result.os.tag) {
         .windows => .windows,
+        .macos => .macos,
         else => .linux,
     };
     const protoc = buildProtoc(b, &sources, host);
@@ -61,10 +63,10 @@ pub fn build(b: *Build) !void {
     for (sources.protos) |proto| run_protoc.addFileArg(b.path(b.fmt("extern/Principia/{s}", .{proto})));
     const version = b.addWriteFiles().add("base/version.generated.cc", try principiaVersion(b));
 
-    var dependencies: [2]Dependencies = undefined;
-    var libraries: [2]*Build.Step.Compile = undefined;
-    var tests: [2]*Build.Step.Compile = undefined;
-    for ([_]Platform{ .linux, .windows }, 0..) |platform, i| {
+    var dependencies: [platforms.len]Dependencies = undefined;
+    var libraries: [platforms.len]*Build.Step.Compile = undefined;
+    var tests: [platforms.len]*Build.Step.Compile = undefined;
+    for (platforms, 0..) |platform, i| {
         const deps = Dependencies.build(b, &sources, platform);
         dependencies[i] = deps;
         libraries[i] = buildLibrary(b, &sources, platform, deps, generated, version);
@@ -72,6 +74,7 @@ pub fn build(b: *Build) !void {
     }
     const linux_lib = libraries[0];
     const windows_lib = libraries[1];
+    const macos_lib = libraries[2];
 
     // The C# mod, against KSA's and StarMap's assemblies.
     const dotnet = b.addSystemCommand(&.{ "dotnet", "build" });
@@ -99,6 +102,7 @@ pub fn build(b: *Build) !void {
         .{ "mod.toml", b.path("src/PrincipiaKSA/mod.toml") },
         .{ "libprincipia_ksa_AVX.so", linux_lib.getEmittedBin() },
         .{ "principia_ksa_AVX.dll", windows_lib.getEmittedBin() },
+        .{ "libprincipia_ksa_arm64.dylib", macos_lib.getEmittedBin() },
         .{ "sol_gravity_model.proto.txt", b.path("extern/Principia/astronomy/sol_gravity_model.proto.txt") },
         .{ "README.txt", b.path("packaging/README.txt") },
         .{ "VERSION", mod_version },
@@ -111,6 +115,7 @@ pub fn build(b: *Build) !void {
         .{ "licenses/zfp.txt", b.path("extern/zfp/LICENSE") },
         .{ "licenses/boost.txt", b.path("extern/multiprecision/LICENSE") },
         .{ "licenses/core-math.txt", b.path("packaging/core-math-LICENSE.txt") },
+        .{ "licenses/simde.txt", b.path("extern/simde/COPYING") },
         .{ "licenses/libc++.txt", zigLib(b, "libcxx/LICENSE.TXT") },
         .{ "licenses/mingw-w64.txt", zigLib(b, "libc/mingw/COPYING") },
     };
@@ -150,7 +155,7 @@ pub fn build(b: *Build) !void {
     // into the real solar system (native/tools/sol_reference.cpp), against
     // Principia's own JPL initial state. Reuses the library's objects.
     const reference_module = principiaCore(b, &sources, host, dependencies[@backingInt(host)], generated, version);
-    reference_module.addCSourceFile(.{ .file = b.path("native/tools/sol_reference.cpp"), .flags = principiaFlags(reference_module.resolved_target.?) });
+    reference_module.addCSourceFile(.{ .file = b.path("native/tools/sol_reference.cpp"), .flags = principiaFlags(b, reference_module.resolved_target.?) });
     const reference = b.addRunArtifact(b.addExecutable(.{ .name = "sol_reference", .root_module = reference_module }));
     reference.addDirectoryArg(b.path("extern/Principia"));
     reference.stdio = .inherit;
@@ -163,7 +168,7 @@ pub fn build(b: *Build) !void {
     const game_files = if (csharp_only) files[0..2] else files[0..];
     for ([_][]const u8{ "game", "run" }) |action| {
         const game = b.addRunArtifact(tool(b, "game"));
-        game.addArgs(&.{ action, mods });
+        game.addArgs(&.{ action, mods, ksa });
         for (game_files) |file| {
             game.addArg(file[0]);
             game.addFileArg(file[1]);
@@ -209,6 +214,12 @@ fn target(b: *Build, platform: Platform, features: Features) Build.ResolvedTarge
             .abi = .gnu,
             .cpu_features_add = added,
         }),
+        .macos => b.resolveTargetQuery(.{
+            .cpu_arch = .aarch64,
+            .os_tag = .macos,
+            .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.apple_m1 },
+            .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } },
+        }),
     };
 }
 
@@ -216,9 +227,13 @@ fn isWindows(t: Build.ResolvedTarget) bool {
     return t.result.os.tag == .windows;
 }
 
+fn isMacos(t: Build.ResolvedTarget) bool {
+    return t.result.os.tag == .macos;
+}
+
 // Native code is always optimized, unsanitized and stripped.
 fn nativeModule(b: *Build, t: Build.ResolvedTarget) *Build.Module {
-    return b.createModule(.{
+    const m = b.createModule(.{
         .target = t,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -228,6 +243,24 @@ fn nativeModule(b: *Build, t: Build.ResolvedTarget) *Build.Module {
         .sanitize_c = .off,
         .omit_frame_pointer = false,
     });
+    if (isMacos(t)) {
+        m.addIncludePath(b.path("native/macos/include"));
+        m.addSystemIncludePath(b.path("extern/simde"));
+        m.addFrameworkPath(b.path("native/macos"));
+    }
+    return m;
+}
+
+// macOS: hidden symbols stand in for exports.map.
+fn macosFlags(b: *Build) []const []const u8 {
+    return b.allocator.dupe([]const u8, &.{
+        "-include", rootPath(b, "native/macos/include/float_first.h"), "-fvisibility=hidden",
+    }) catch @panic("OOM");
+}
+
+fn platformFlags(b: *Build, t: Build.ResolvedTarget, flags: []const []const u8) []const []const u8 {
+    if (!isMacos(t)) return flags;
+    return std.mem.concat(b.allocator, []const u8, &.{ flags, macosFlags(b) }) catch @panic("OOM");
 }
 
 // The dependencies, as Principia's install_deps.sh builds them.
@@ -247,7 +280,6 @@ const principia_common_flags = [_][]const u8{
     "-DNDEBUG",
     "-DPRINCIPIA_REQUIRES_AVX=1",
     "-DPRINCIPIA_REQUIRES_FMA=1",
-    "-DPLATFORM_WITH_CPU_FEATURES=\"x64_AVX_FMA\"",
     "-DPROJECT_DIR=std::filesystem::path(\"ksp_plugin_adapter/\")",
     "-DSOLUTION_DIR=std::filesystem::path(\"./\")",
     "-Wall",
@@ -257,14 +289,58 @@ const principia_common_flags = [_][]const u8{
     "-Wno-c++23-extensions",
     "--system-header-prefix=serialization/",
 };
-const principia_linux_flags = principia_common_flags ++ [_][]const u8{"-DTEMP_DIR=std::filesystem::path(\"/tmp\")"};
-const principia_windows_flags = principia_common_flags ++ [_][]const u8{"-DTEMP_DIR=std::filesystem::path(\"C:/Windows/Temp\")"};
+const principia_x64_flags = principia_common_flags ++ [_][]const u8{"-DPLATFORM_WITH_CPU_FEATURES=\"x64_AVX_FMA\""};
+const principia_linux_flags = principia_x64_flags ++ [_][]const u8{"-DTEMP_DIR=std::filesystem::path(\"/tmp\")"};
+const principia_windows_flags = principia_x64_flags ++ [_][]const u8{"-DTEMP_DIR=std::filesystem::path(\"C:/Windows/Temp\")"};
+const principia_macos_flags = principia_common_flags ++ [_][]const u8{
+    "-DPLATFORM_WITH_CPU_FEATURES=\"arm64\"",
+    "-DTEMP_DIR=std::filesystem::path(\"/tmp\")",
+};
 
-fn principiaFlags(t: Build.ResolvedTarget) []const []const u8 {
-    return if (isWindows(t)) &principia_windows_flags else &principia_linux_flags;
+fn principiaFlags(b: *Build, t: Build.ResolvedTarget) []const []const u8 {
+    if (isWindows(t)) return &principia_windows_flags;
+    if (isMacos(t)) return platformFlags(b, t, &principia_macos_flags);
+    return &principia_linux_flags;
+}
+
+// Principia's base/macros.hpp with an arm64 case, used before Principia's own.
+fn arm64Macros(b: *Build) LazyPath {
+    const path = "extern/Principia/base/macros.hpp";
+    b.dependOnFileContents(b.path(path));
+    const text = readFile(b, path) catch @panic("cannot read " ++ path);
+    const x64 = std.mem.indexOf(u8, text, "char const* const Architecture = \"x86-64\";");
+    const newline = if (x64) |at| std.mem.indexOfPos(u8, text, at, "\n#else") else null;
+    const problem: ?[]const u8 = if (newline == null)
+        "Principia's base/macros.hpp changed: no x86-64 case to add arm64 after (arm64Macros in build.zig)"
+    else if (std.mem.indexOf(u8, text[newline.?..], "aarch64") != null)
+        "Principia's base/macros.hpp has an arm64 case of its own: remove arm64Macros from build.zig"
+    else
+        null;
+    if (problem) |message| {
+        const files = b.addWriteFiles();
+        _ = files.add("base/macros.hpp", b.fmt("#error \"{s}\"\n", .{message}));
+        return files.getDirectory();
+    }
+    const split = newline.? + 1;
+    const patched = b.fmt("{s}{s}{s}", .{
+        text[0..split],
+        \\#elif defined(__aarch64__)
+        \\#define ARCH_CPU_ARM_FAMILY 1
+        \\#define ARCH_CPU_ARM64 1
+        \\#define ARCH_CPU_64_BITS 1
+        \\#define ARCH_CPU_LITTLE_ENDIAN 1
+        \\char const* const Architecture = "arm64";
+        \\
+        ,
+        text[split..],
+    });
+    const files = b.addWriteFiles();
+    _ = files.add("base/macros.hpp", patched);
+    return files.getDirectory();
 }
 
 fn principiaIncludes(b: *Build, m: *Build.Module, generated: LazyPath) void {
+    if (m.resolved_target.?.result.cpu.arch == .aarch64) m.addIncludePath(arm64Macros(b));
     m.addIncludePath(b.path("extern/Principia"));
     m.addIncludePath(generated);
     for ([_][]const u8{
@@ -285,7 +361,7 @@ fn staticLibrary(
 ) *Build.Step.Compile {
     const m = nativeModule(b, t);
     for (includes) |dir| m.addIncludePath(b.path(dir));
-    m.addCSourceFiles(.{ .root = b.path("extern"), .files = files, .flags = flags, .language = language });
+    m.addCSourceFiles(.{ .root = b.path("extern"), .files = files, .flags = platformFlags(b, t, flags), .language = language });
     return b.addLibrary(.{ .name = name, .linkage = .static, .root_module = m });
 }
 
@@ -318,6 +394,7 @@ const Dependencies = struct {
 
     fn linkInto(d: Dependencies, m: *Build.Module) void {
         for (d.libraries) |library| m.linkLibrary(library);
+        if (isMacos(m.resolved_target.?)) m.linkFramework("CoreFoundation", .{});
     }
 };
 
@@ -351,11 +428,13 @@ const zfp_sources = blk: {
 };
 
 fn buildProtoc(b: *Build, s: *const Sources, platform: Platform) *Build.Step.Compile {
-    const m = nativeModule(b, target(b, platform, .base));
+    const t = target(b, platform, .base);
+    const m = nativeModule(b, t);
     for (protobuf_includes) |dir| m.addIncludePath(b.path(dir));
-    m.addCSourceFiles(.{ .root = b.path("extern"), .files = s.protoc, .flags = &(dep_cxxflags ++ [_][]const u8{"-DGOOGLE_PROTOBUF_CMAKE_BUILD"}) });
-    m.addCSourceFiles(.{ .root = b.path("extern"), .files = s.upb, .flags = &dep_cflags });
-    m.addCSourceFiles(.{ .root = b.path("extern"), .files = &.{"protobuf/src/google/protobuf/compiler/main.cc"}, .flags = &(dep_cxxflags ++ [_][]const u8{"-DGOOGLE_PROTOBUF_CMAKE_BUILD"}) });
+    const cxxflags = platformFlags(b, t, &(dep_cxxflags ++ [_][]const u8{"-DGOOGLE_PROTOBUF_CMAKE_BUILD"}));
+    m.addCSourceFiles(.{ .root = b.path("extern"), .files = s.protoc, .flags = cxxflags });
+    m.addCSourceFiles(.{ .root = b.path("extern"), .files = s.upb, .flags = platformFlags(b, t, &dep_cflags) });
+    m.addCSourceFiles(.{ .root = b.path("extern"), .files = &.{"protobuf/src/google/protobuf/compiler/main.cc"}, .flags = cxxflags });
     Dependencies.build(b, s, platform).linkInto(m);
     return b.addExecutable(.{ .name = "protoc", .root_module = m });
 }
@@ -372,7 +451,7 @@ fn principiaCore(
 ) *Build.Module {
     const t = target(b, platform, .avx_fma);
     const m = nativeModule(b, t);
-    const flags = principiaFlags(t);
+    const flags = principiaFlags(b, t);
     principiaIncludes(b, m, generated);
     m.addCSourceFiles(.{ .root = b.path("extern/Principia"), .files = s.principia, .flags = flags });
     for (s.protos) |proto| m.addCSourceFile(.{
@@ -404,10 +483,13 @@ fn buildLibrary(
     const t = m.resolved_target.?;
     m.addCSourceFile(.{
         .file = b.path("native/principia_ksa.cpp"),
-        .flags = std.mem.concat(b.allocator, []const u8, &.{ principiaFlags(t), &.{"-DPRINCIPIA_KSA_BUILD"} }) catch @panic("OOM"),
+        .flags = std.mem.concat(b.allocator, []const u8, &.{ principiaFlags(b, t), &.{"-DPRINCIPIA_KSA_BUILD"} }) catch @panic("OOM"),
     });
-    const library = b.addLibrary(.{ .name = "principia_ksa_AVX", .linkage = .dynamic, .root_module = m });
-    if (!isWindows(t)) {
+    const name = if (isMacos(t)) "principia_ksa_arm64" else "principia_ksa_AVX";
+    const library = b.addLibrary(.{ .name = name, .linkage = .dynamic, .root_module = m });
+    if (isMacos(t)) {
+        library.link_gc_sections = true;
+    } else if (!isWindows(t)) {
         library.setVersionScript(b.path("native/exports.map"));
         library.link_gc_sections = true;
     }
@@ -418,9 +500,12 @@ fn buildSmokeTest(b: *Build, platform: Platform, library: *Build.Step.Compile) *
     const t = target(b, platform, .base);
     const m = nativeModule(b, t);
     m.addIncludePath(b.path("native"));
-    m.addCSourceFile(.{ .file = b.path("native/test/smoke_test.cpp"), .flags = &.{ "-std=c++20", "-O1", "-Wall" } });
+    m.addCSourceFile(.{ .file = b.path("native/test/smoke_test.cpp"), .flags = platformFlags(b, t, &.{ "-std=c++20", "-O1", "-Wall" }) });
     m.linkLibrary(library);
-    if (!isWindows(t)) {
+    if (isMacos(t)) {
+        m.addRPathSpecial("@loader_path");
+        m.addRPath(library.getEmittedBinDirectory());
+    } else if (!isWindows(t)) {
         m.addRPathSpecial("$ORIGIN");
         m.addRPath(library.getEmittedBinDirectory());
     }
@@ -458,7 +543,7 @@ const Sources = struct {
     protos: []const []const u8,
 
     fn collect(b: *Build) !Sources {
-        for ([_][]const u8{ "Principia", "abseil-cpp", "protobuf", "re2", "gipfeli", "core-math", "zfp", "config", "multiprecision" }) |name|
+        for ([_][]const u8{ "Principia", "abseil-cpp", "protobuf", "re2", "gipfeli", "core-math", "zfp", "config", "multiprecision", "simde" }) |name|
             try dependOnCheckout(b, name);
 
         var absl: std.ArrayList([]const u8) = .empty;
@@ -588,7 +673,12 @@ fn dependOnCheckout(b: *Build, name: []const u8) !void {
 }
 
 fn ensureSubmodules(b: *Build) !void {
-    if (exists(b, "extern/Principia/physics")) return;
+    if (exists(b, "extern/Principia/physics")) {
+        if (exists(b, "extern/simde/simde")) return;
+        std.log.info("fetching SIMDe (git submodule update --init extern/simde)", .{});
+        _ = b.run(&.{ "git", "-C", rootPath(b, "."), "submodule", "update", "--init", "extern/simde" });
+        return;
+    }
     std.log.info("fetching Principia and its dependencies (git submodule update --init)", .{});
     _ = b.run(&.{ "git", "-C", rootPath(b, "."), "submodule", "update", "--init" });
 }
@@ -629,6 +719,14 @@ fn home(b: *Build) []const u8 {
     return b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse ".";
 }
 
+// The Borea launcher's folder.
+fn boreaDir(b: *Build) []const u8 {
+    return if (b.graph.host.result.os.tag == .macos)
+        b.fmt("{s}/Library/Application Support/Borea", .{home(b)})
+    else
+        b.fmt("{s}/.local/share/Borea", .{home(b)});
+}
+
 // Whether `dir` holds `file`. The configure phase is cached: what it found
 // is tracked, so a change (a launcher updating StarMap) configures again.
 fn hasFile(b: *Build, dir: []const u8, file: []const u8) bool {
@@ -640,7 +738,7 @@ fn hasFile(b: *Build, dir: []const u8, file: []const u8) bool {
 // A string in the Borea launcher's settings: `key = "value"` in `[section]`
 // (or before any section if it is ""). Tracked as above.
 fn boreaSetting(b: *Build, section: []const u8, key: []const u8) ?[]const u8 {
-    const path = b.fmt("{s}/.local/share/Borea/borea-settings.toml", .{home(b)});
+    const path = b.fmt("{s}/borea-settings.toml", .{boreaDir(b)});
     b.dependOnFileContents(.{ .cwd_relative = path });
     const text = std.Io.Dir.cwd().readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch return null;
     var in_section = section.len == 0;
@@ -671,6 +769,8 @@ fn findKsa(b: *Build) []const u8 {
     }
     const candidates = [_][]const u8{
         "C:/Program Files/Kitten Space Agency",
+        "/Applications/Kitten Space Agency.app/Contents/Resources",
+        b.fmt("{s}/Applications/Kitten Space Agency.app/Contents/Resources", .{home(b)}),
         b.fmt("{s}/Games/Ahwoo/Kitten Space Agency", .{home(b)}),
     };
     for (candidates) |dir| if (hasFile(b, dir, "KSA.dll")) return dir;
