@@ -1,7 +1,30 @@
 using Brutal.Numerics;
+using HarmonyLib;
 using KSA;
 
 namespace PrincipiaKSA;
+
+// The n-body system: KSA's bodies as a Principia ephemeris (PrincipiaSystem),
+// integrated ahead of game time in the background (Prolonger), with KSA's
+// spheres of influence over it (Spheres), tidally locked moons fitted to it
+// (TidalLock), and paused in multiplayer (Multiplayer).
+
+// KSA's star system as LINQ can read it.
+internal static class CelestialSystems
+{
+    // Every body of type T. (CelestialSystem.All.OfType is KSA's own, not
+    // LINQ's: a stack-only enumerator, which can only be walked.)
+    public static List<T> BodiesOf<T>(this CelestialSystem system) where T : class
+    {
+        var bodies = new List<T>();
+        var e = system.All.OfType<T>().GetEnumerator();
+        while (e.MoveNext())
+        {
+            bodies.Add(e.Current);
+        }
+        return bodies;
+    }
+}
 
 // KSA's star system as a Principia ephemeris: every body with a mass, with
 // its μ, rotation and, where Principia has one, geopotential.
@@ -28,6 +51,7 @@ internal sealed class PrincipiaSystem : IDisposable
     public IReadOnlyList<Astronomical> Bodies { get; }    // In ephemeris order.
     public IReadOnlyList<Astronomical> Massless { get; }  // Mass 0: left on KSA's orbits.
     public IReadOnlyDictionary<Astronomical, Orbit> OriginalOrbits { get; }
+    public Spheres Spheres { get; }  // KSA's spheres of influence over Bodies.
 
     // Set once on any failure; the bodies then coast on their last orbits.
     public string? FailureReason => _failureReason;
@@ -60,10 +84,14 @@ internal sealed class PrincipiaSystem : IDisposable
             }
         }
         OriginalOrbits = bodies.OfType<IOrbiter>().ToDictionary(o => (Astronomical)o, o => o.Orbit);
+        Spheres = new Spheres(this);
         Prolonger = new Prolonger(this);
     }
 
     public int? IndexOf(Astronomical body) => _index.TryGetValue(body, out int i) ? i : null;
+
+    // A body by its id; null for none (or a null id).
+    public Astronomical? Find(string? id) => id == null ? null : Bodies.FirstOrDefault(b => b.Id == id);
 
     public bool TryGetLink(Astronomical body, out Link link) => _links.TryGetValue(body, out link);
 
@@ -108,10 +136,8 @@ internal sealed class PrincipiaSystem : IDisposable
 
         var bodies = new List<Astronomical>();
         var massless = new List<Astronomical>();
-        var all = system.All.OfType<Astronomical>().GetEnumerator();
-        while (all.MoveNext())
+        foreach (Astronomical a in system.BodiesOf<Astronomical>())
         {
-            Astronomical a = all.Current;
             if (a is Barycenter || a is not IParentBody parentBody)
             {
                 continue;  // Barycenters are bookkeeping points.
@@ -298,5 +324,317 @@ internal sealed class PrincipiaSystem : IDisposable
             Thread.Yield();
         }
         Ephemeris.Dispose();
+    }
+}
+
+// Integrates the ephemeris ahead of game time on a background thread, so
+// that time warp doesn't stall frames.
+internal sealed class Prolonger : IDisposable
+{
+    // Work in bounded chunks so that Dispose doesn't wait for a huge prolong.
+    private const double ChunkSeconds = 30 * 86400;
+
+    // How far ahead of game time the planets are kept integrated, so that
+    // lines rarely wait for them: for KSA's 46 bodies a year takes ~2 s of
+    // this thread's time and ~30 MB (0.6 MB per body-year). Lines reaching
+    // further ask for more as they go (Predictor.AheadOfPlanets).
+    public const double Horizon = 365.25 * 86400;
+
+    private readonly PrincipiaSystem _system;
+    private readonly Thread _thread;
+    private readonly AutoResetEvent _wake = new(false);
+    private double _target;  // s since J2000; read and written with Volatile/Interlocked.
+    private volatile bool _stop;
+
+    public Prolonger(PrincipiaSystem system)
+    {
+        _system = system;
+        // Below the game's threads: what the game needs next it integrates
+        // itself if this thread is behind (EnsureProlonged).
+        _thread = new Thread(Run)
+        {
+            IsBackground = true, Name = "Principia prolong", Priority = ThreadPriority.BelowNormal,
+        };
+        _thread.Start();
+    }
+
+    // Asks the background thread to integrate up to `t`. Never blocks.
+    public void Request(double t)
+    {
+        double current = Volatile.Read(ref _target);
+        while (t > current)
+        {
+            double seen = Interlocked.CompareExchange(ref _target, t, current);
+            if (seen == current)
+            {
+                _wake.Set();
+                return;
+            }
+            current = seen;
+        }
+    }
+
+    // Integrates up to `t` on this thread if the background one hasn't.
+    public void EnsureProlonged(double t)
+    {
+        if (_system.Ephemeris.TimeRange.TMax < t)
+        {
+            _system.Ephemeris.Prolong(t);
+        }
+    }
+
+    private void Run()
+    {
+        FrameProfiler.MarkBackgroundThread();
+        while (!_stop)
+        {
+            _wake.WaitOne(250);
+            try
+            {
+                double target = Volatile.Read(ref _target);
+                double tMax = _system.Ephemeris.TimeRange.TMax;
+                while (!_stop && tMax < target)
+                {
+                    using (FrameProfiler.ProlongAhead.Measure())
+                    {
+                        _system.Ephemeris.Prolong(Math.Min(target, tMax + ChunkSeconds));
+                    }
+                    tMax = _system.Ephemeris.TimeRange.TMax;
+                }
+            }
+            catch (Exception e)
+            {
+                if (!_stop)
+                {
+                    _system.Fail($"background prolongation failed: {e.Message}");
+                }
+                return;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _stop = true;
+        _wake.Set();
+        _thread.Join();
+        _wake.Dispose();
+    }
+}
+
+// KSA's spheres of influence over Principia's bodies, as KSA moves a vessel
+// between them (FiniteBurnPredictor.CrossedAt): out of a body's sphere into
+// its parent's, into a child's within it. Indices are the ephemeris'.
+internal sealed class Spheres
+{
+    private readonly int[] _parent;      // -1: a root, or a parent Principia doesn't have.
+    private readonly double[] _radius;
+    private readonly int[][] _children;  // Those with a finite sphere.
+
+    public Spheres(PrincipiaSystem system)
+    {
+        int n = system.Bodies.Count;
+        _parent = new int[n];
+        _radius = new double[n];
+        var children = new List<int>[n];
+        for (int i = 0; i < n; i++)
+        {
+            children[i] = new List<int>();
+        }
+        for (int i = 0; i < n; i++)
+        {
+            Astronomical body = system.Bodies[i];
+            _radius[i] = body is IParentBody p ? p.SphereOfInfluence : 0;
+            _parent[i] = body is not IIndependentRoot && body is IOrbiter { Parent: Astronomical up } &&
+                         system.IndexOf(up) is int u ? u : -1;
+            if (_parent[i] >= 0 && _radius[i] > 0 && double.IsFinite(_radius[i]))
+            {
+                children[_parent[i]].Add(i);
+            }
+        }
+        _children = children.Select(c => c.ToArray()).ToArray();
+    }
+
+    // The body a vessel at `position` (absolute, at t) is about, starting from
+    // the one it was about.
+    public int Of(Ephemeris ephemeris, int from, double3 position, double t)
+    {
+        int body = from;
+        double Distance(int i) => (position - ephemeris.State(i, t).Q.ToDouble3()).Length();
+        while (_parent[body] >= 0 && Distance(body) > _radius[body])
+        {
+            body = _parent[body];
+        }
+        for (bool deeper = true; deeper;)
+        {
+            deeper = false;
+            foreach (int child in _children[body])
+            {
+                if (Distance(child) < _radius[child])
+                {
+                    body = child;
+                    deeper = true;
+                    break;
+                }
+            }
+        }
+        return body;
+    }
+
+    // Whether `body` is a child of `of`, whose sphere it is entered from.
+    public bool IsChild(int body, int of) => _parent[body] == of;
+
+    // The body whose sphere `body`'s is in; -1 for none.
+    public int ParentOf(int body) => _parent[body];
+}
+
+// KSA spins a tidally locked body at its Kepler rate, but its n-body mean
+// motion differs (Luna: 27.07 d against the real 27.32 d), so the near side
+// would turn away. Each locked pair's mean motion is fitted from a point-mass
+// integration over up to a year and becomes the spin rate, with the epoch
+// angle shifted so the same face points at the partner.
+internal static class TidalLock
+{
+    private static readonly AccessTools.FieldRef<Celestial, double> AngularVelocity =
+        AccessTools.FieldRefAccess<Celestial, double>("AngularVelocity");
+    private static readonly AccessTools.FieldRef<Celestial, double> InitialRotation =
+        AccessTools.FieldRefAccess<Celestial, double>("InitialRotation");
+
+    private const double Year = 365.25 * 86400;
+
+    public static void Correct(IReadOnlyList<Astronomical> bodies, QP[] states, double t0, UniverseTime epoch)
+    {
+        var pairs = FindLockedPairs(bodies);
+        if (pairs.Count == 0)
+        {
+            return;
+        }
+
+        var index = bodies.Select((b, i) => (b, i)).ToDictionary(x => x.b, x => x.i);
+        var specs = bodies.Select(b => new BodySpec(b.Id, ((IParentBody)b).Mu)).ToList();
+        using Ephemeris pointMasses = Ephemeris.Create(specs, states, t0);
+
+        foreach (var (body, partner, kspPeriod) in pairs)
+        {
+            double horizon = Math.Clamp(10 * kspPeriod, 30 * 86400, Year);
+            if (horizon < 3 * kspPeriod)
+            {
+                // Too slow to fit over a year.
+                Log.Info($"[tidal lock] {body.Id}: period {kspPeriod / 86400:F1} d too long to measure; left unchanged");
+                continue;
+            }
+            pointMasses.Prolong(t0 + horizon);
+            int samples = (int)Math.Clamp(16 * horizon / kspPeriod, 64, 20000);
+            doubleQuat cce2Cci = body.GetCci2Cce().Inverse();
+
+            double Direction(double t)
+            {
+                QP b = pointMasses.State(index[body], t), p = pointMasses.State(index[partner], t);
+                double3 d = (p.Q.ToDouble3() - b.Q.ToDouble3()).Transform(cce2Cci);
+                return Math.Atan2(d.Y, d.X);
+            }
+
+            // Unwrap the partner's direction and fit a line: slope = mean motion.
+            double sumT = 0, sumA = 0, sumTT = 0, sumTA = 0, previous = Direction(t0), unwrapped = previous;
+            for (int k = 0; k <= samples; k++)
+            {
+                double dt = horizon * k / samples;
+                double angle = Direction(t0 + dt);
+                double step = Math.IEEERemainder(angle - previous, 2 * Math.PI);
+                unwrapped += k == 0 ? 0 : step;
+                previous = angle;
+                sumT += dt; sumA += unwrapped; sumTT += dt * dt; sumTA += dt * unwrapped;
+            }
+            int n = samples + 1;
+            double meanMotion = (n * sumTA - sumT * sumA) / (n * sumTT - sumT * sumT);
+
+            double oldOmega = AngularVelocity(body);
+            if (Math.Sign(meanMotion) != Math.Sign(oldOmega) || Math.Abs(meanMotion / oldOmega - 1) > 0.2)
+            {
+                Log.Warn($"[tidal lock] {body.Id}: measured mean motion {meanMotion:E6} rad/s is far from " +
+                         $"KSA's {oldOmega:E6}; left unchanged");
+                continue;
+            }
+
+            // Shift by how much the corrected initial state moved the partner.
+            double3 ksaDirection = KsaDirection(body, partner, epoch).Transform(cce2Cci);
+            double shift = Math.IEEERemainder(Direction(t0) - Math.Atan2(ksaDirection.Y, ksaDirection.X),
+                                              2 * Math.PI);
+            AngularVelocity(body) = meanMotion;
+            InitialRotation(body) += shift;
+            Log.Info($"[tidal lock] {body.Id} faces {partner.Id}: period " +
+                     $"{2 * Math.PI / oldOmega / 86400:F4} d → {2 * Math.PI / meanMotion / 86400:F4} d " +
+                     $"(n-body mean over {horizon / 86400:F0} d), epoch rotation shifted {shift * 180 / Math.PI:F3}°");
+        }
+    }
+
+    // Bodies whose spin KSA ties to an orbit: moons locked to their parent
+    // (IsTidallyLocked) and planets locked to a moon (Pluto to Charon).
+    private static List<(Celestial Body, Astronomical Partner, double Period)> FindLockedPairs(
+        IReadOnlyList<Astronomical> bodies)
+    {
+        var simulated = bodies.ToHashSet();
+        var pairs = new List<(Celestial, Astronomical, double)>();
+        foreach (Celestial c in bodies.OfType<Celestial>())
+        {
+            double omega = AngularVelocity(c);
+            if (omega == 0)
+            {
+                continue;
+            }
+            if ((bool)c.BodyTemplate.Rotation.IsTidallyLocked && c.Parent is Astronomical parent &&
+                simulated.Contains(parent) && double.IsFinite(c.Orbit.Period))
+            {
+                pairs.Add((c, parent, c.Orbit.Period));
+                continue;
+            }
+            foreach (IOrbiter child in c.Children)
+            {
+                if (child is Celestial moon && simulated.Contains(moon) && double.IsFinite(moon.Orbit.Period) &&
+                    Math.Abs(Math.Abs(omega) * moon.Orbit.Period / (2 * Math.PI) - 1) < 1e-9)
+                {
+                    pairs.Add((c, moon, moon.Orbit.Period));
+                    break;
+                }
+            }
+        }
+        return pairs;
+    }
+
+    // Direction from `body` to `partner` in Ecl axes per KSA's own orbits.
+    private static double3 KsaDirection(Celestial body, Astronomical partner, UniverseTime t)
+    {
+        if (body.Parent == partner)
+        {
+            return -body.GetPositionCce(t);  // body relative to parent
+        }
+        return ((IOrbiter)partner).GetPositionCce(t);  // moon relative to body
+    }
+}
+
+// While online, n-body driving pauses (the other players follow KSA's
+// conics); back offline, the bodies move to Principia's states again.
+internal static class Multiplayer
+{
+    private static bool? _wasOnline;
+
+    // Main thread, once per frame.
+    public static void Tick()
+    {
+        bool online = PrincipiaSystem.Online;
+        if (_wasOnline == online)
+        {
+            return;
+        }
+        if (_wasOnline != null || online)
+        {
+            Log.Info(online ? "Multiplayer session: n-body driving paused" : "Offline: n-body driving resumed");
+        }
+        bool resumed = _wasOnline == true;
+        _wasOnline = online;
+        if (resumed)
+        {
+            CelestialDriver.JumpTo(Universe.GetElapsedTime());
+        }
     }
 }

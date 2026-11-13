@@ -2,7 +2,36 @@ using System.Reflection;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
+
+// Guards against KSA's own bugs that n-body paths reach and that would
+// otherwise abort the game.
+
+// KSA's time to leave a sphere of influence can come out NaN at the edge of
+// its orbit formulas (an escape near the asymptote of a hyperbola, an orbit
+// near parabolic), and constructing a UniverseTime from it throws. On the
+// transfer planner's worker threads nothing catches it and the game aborts.
+// A NaN true anomaly a few lines earlier already ends the plan as an error;
+// a NaN time now ends it the same way.
+[HarmonyPatch(typeof(FlightPlan), nameof(FlightPlan.CalculateEscapePatch))]
+internal static class EscapePatchGuard
+{
+    [HarmonyFinalizer]
+    private static Exception? Finalizer(Exception? __exception, PatchedConic patch, ref PatchedConic? nextPatch,
+                                        ref bool error, ref bool __result)
+    {
+        if (__exception is not ArgumentException)
+        {
+            return __exception;
+        }
+        patch.EndTransition = PatchTransition.Final;
+        nextPatch = null;
+        error = true;
+        __result = false;
+        Log.WarnOnce("[conics] KSA's escape from a sphere of influence (plan ended there)", __exception);
+        return null;
+    }
+}
 
 // KSA classes an orbit as parabolic when its energy is within a millionth of
 // zero, and gives it no period, but elsewhere tells a closed orbit by

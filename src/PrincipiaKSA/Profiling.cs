@@ -1,8 +1,20 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
+using HarmonyLib;
 using KSA;
 
 namespace PrincipiaKSA;
+
+// Timing, for the log: each frame's work, to explain stutters (FrameProfiler,
+// with KSA's own methods timed by KsaTimingPatches), and each prediction's,
+// to explain slow lines (PredictionTiming).
+
+// Stopwatch ticks as milliseconds.
+internal static class Clock
+{
+    public static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+}
 
 // Finds what makes a frame stutter. Sections of code (KSA's per-frame methods,
 // the mod's hooks, the native calls) are timed into three buckets by thread:
@@ -45,7 +57,7 @@ internal static class FrameProfiler
     public static readonly Section PlanetConics = Define("mod: rebuild planet conics");
     public static readonly Section Snapshot = Define("mod: prediction snapshot");
     public static readonly Section StatusAndSettings = Define("mod: status log and settings");
-    public static readonly Section MapOverlay = Define("mod: map markers and window");
+    public static readonly Section MapOverlay = Define("mod: map markers");
     public static readonly Section Window = Define("mod: PrincipiaKSA window");
     public static readonly Section OrbitLines = Define("mod: orbit lines");
     public static readonly Section ImpactOverride = Define("mod: impact override");
@@ -159,7 +171,6 @@ internal static class FrameProfiler
     private static readonly int[] LastCollections = new int[3];
     private static long _lastCorrections;
 
-    private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
     // Main thread, at the start of each of KSA's frames (Program.OnFrame).
     public static void FrameStart()
@@ -206,7 +217,7 @@ internal static class FrameProfiler
         {
             return;  // No frame before, or nothing of ours running.
         }
-        double ms = Ms(now - start);
+        double ms = Clock.Ms(now - start);
         // The first frames after a load aren't the usual.
         bool settled = ++_frames > 120;
         bool slow = settled && ms >= StutterMs && ms >= StutterFactor * _usualMs;
@@ -244,7 +255,7 @@ internal static class FrameProfiler
         }
         text.Append($"; {Context(corrections)}");
 
-        double timedMs = Ms(outermost);
+        double timedMs = Clock.Ms(outermost);
         text.Append($"\n[stutter]   main thread: {timedMs:F1} ms in timed code, {Math.Max(0, ms - timedMs):F1} ms " +
                     "elsewhere (rendering and KSA's untimed work); a KSA method's time includes the mod's " +
                     "hooks and native calls inside it");
@@ -261,7 +272,7 @@ internal static class FrameProfiler
             int listed = 0;
             foreach (var row in rows)
             {
-                double total = Ms(row.Ticks[b]);
+                double total = Clock.Ms(row.Ticks[b]);
                 if (listed == ListedPerBucket || (total < ListedMs && listed > 0))
                 {
                     break;
@@ -270,7 +281,7 @@ internal static class FrameProfiler
                 text.Append($"\n[stutter]     {total,8:F1} ms  {row.Section.Name}  ({calls:N0} call{(calls == 1 ? "" : "s")}");
                 if (calls > 1)
                 {
-                    text.Append($", longest {Ms(row.Longest[b]):F1} ms");
+                    text.Append($", longest {Clock.Ms(row.Longest[b]):F1} ms");
                 }
                 text.Append(')');
                 listed++;
@@ -309,4 +320,204 @@ internal static class FrameProfiler
         parts.Add(Line(Predictor.LatestPlan, "flight plan"));
         return string.Join("; ", parts);
     }
+}
+
+// Finds slow predictions. Each computation (the prediction, the flight plan)
+// times its stages on its own thread: the native Predict calls, split as the
+// library reports them (PredictTimings), and the C# stages around them. A
+// computation slower than SlowMs is logged with the breakdown ("[predict]").
+internal static class PredictionTiming
+{
+    private const double SlowMs = 150;
+    private static readonly long ReportInterval = Stopwatch.Frequency;
+
+    // This thread's computation.
+    [ThreadStatic] private static Dictionary<string, double>? _stages;
+    [ThreadStatic] private static PredictTimings _native;
+    [ThreadStatic] private static int _nativeCalls, _apsisBodies;
+
+    // When each kind was last logged, and how many slow ones were not.
+    private static readonly Dictionary<string, (long Next, int Skipped)> Reported = new();
+
+    public static void Begin()
+    {
+        (_stages ??= new()).Clear();
+        _native = default;
+        _nativeCalls = _apsisBodies = 0;
+    }
+
+    // `using (PredictionTiming.Stage("..."))` around a C# stage.
+    public static Measurement Stage(string name) => new(name);
+
+    public readonly struct Measurement(string name) : IDisposable
+    {
+        private readonly long _start = Stopwatch.GetTimestamp();
+
+        public void Dispose()
+        {
+            if (_stages is { } stages)
+            {
+                stages[name] = stages.GetValueOrDefault(name) + Clock.Ms(Stopwatch.GetTimestamp() - _start);
+            }
+        }
+    }
+
+    // After each native Predict on this thread.
+    public static void AddNative(in PredictTimings t, int apsisBodies)
+    {
+        _nativeCalls++;
+        _apsisBodies = Math.Max(_apsisBodies, apsisBodies);
+        _native.Total += t.Total;
+        _native.Prolong += t.Prolong;
+        _native.GiveWay += t.GiveWay;
+        _native.ProlongPieces += t.ProlongPieces;
+        _native.Flow += t.Flow;
+        _native.Apsides += t.Apsides;
+        _native.Thinning += t.Thinning;
+        _native.Chunks += t.Chunks;
+    }
+
+
+    // Logs the computation if it was slow. `waitedMs`: from its request
+    // (the snapshot of the vessel) to its start.
+    public static void End(string what, double totalMs, double waitedMs, Prediction? p)
+    {
+        if (totalMs < SlowMs)
+        {
+            return;
+        }
+        long now = Stopwatch.GetTimestamp();
+        lock (Reported)
+        {
+            var (next, skipped) = Reported.GetValueOrDefault(what);
+            if (now < next)
+            {
+                Reported[what] = (next, skipped + 1);
+                return;
+            }
+            Reported[what] = (now + ReportInterval, 0);
+            var text = new StringBuilder();
+            text.Append($"[predict] slow {what}: {totalMs:F0} ms, started {waitedMs:F0} ms after its request");
+            if (skipped > 0)
+            {
+                text.Append($" ({skipped} more slow since the last report)");
+            }
+            PredictTimings n = _native;
+            text.Append($"\n[predict]   native Predict ×{_nativeCalls}: {n.Total:F1} ms");
+            text.Append($"\n[predict]     planets integrated ahead: {n.Prolong:F1} ms in {n.ProlongPieces:N0} pieces " +
+                        $"of 6 h, of which giving way to the game's calls {n.GiveWay:F1} ms");
+            text.Append($"\n[predict]     vessel flow: {n.Flow:F1} ms in {n.Chunks:N0} chunks");
+            text.Append($"\n[predict]     apsides: {n.Apsides:F1} ms, about up to {_apsisBodies} bodies");
+            text.Append($"\n[predict]     thinning: {n.Thinning:F1} ms");
+            double other = n.Total - n.Prolong - n.Flow - n.Apsides - n.Thinning;
+            if (other >= 0.5)
+            {
+                text.Append($"\n[predict]     other native: {other:F1} ms");
+            }
+            if (_stages is { Count: > 0 } stages)
+            {
+                text.Append("\n[predict]   C#:");
+                foreach (var (name, ms) in stages.OrderByDescending(s => s.Value))
+                {
+                    text.Append($"\n[predict]     {name}: {ms:F1} ms");
+                }
+            }
+            if (p is { Times.Length: > 0 })
+            {
+                text.Append($"\n[predict]   result: {(p.StateTimes[^1] - p.StateTimes[0]) / 86400:F1} d, " +
+                            $"{p.Steps:N0} steps, {p.StateTimes.Length:N0} points kept, {p.Times.Length:N0} drawn, " +
+                            $"{p.Stretches.Length} stretches, {p.Markers.Count} markers" +
+                            (p.Impact ? ", ends in an impact" : ""));
+            }
+            Log.Info(text.ToString());
+        }
+    }
+}
+
+// The start of each of KSA's frames: FrameProfiler takes the last frame's
+// times and logs it if it stuttered.
+[HarmonyPatch(typeof(Program), "OnFrame")]
+internal static class FrameStartPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix()
+    {
+        try
+        {
+            FrameProfiler.FrameStart();
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[stutter] frame start", e);
+        }
+    }
+}
+
+// Times KSA's own per-frame work, so a stutter report shows KSA's part next to
+// the mod's. Each method is wrapped whole: its time includes the mod's hooks
+// on it and anything it calls.
+[HarmonyPatch]
+internal static class KsaTimingPatches
+{
+    private static readonly (Type Type, string Method)[] Targets =
+    [
+        // The frame, in KSA's order (Program.OnFrame).
+        (typeof(Program), "PrepareFrame"),        // Waits for the last frame's jobs, applies their results.
+        (typeof(Universe), nameof(Universe.ApplyOrbitSolvers)),
+        (typeof(Universe), nameof(Universe.ApplyVehicleSolvers)),
+        (typeof(Universe), nameof(Universe.GetJobSimStep)),
+        (typeof(Universe), nameof(Universe.ExecuteNextVehicleSolvers)),
+        (typeof(Universe), nameof(Universe.ExecuteNextOrbitSolvers)),
+        (typeof(Program), "OnFrameCelestials"),
+        (typeof(Program), "UpdateGauges"),
+        (typeof(Program), "OnPreRender"),
+        (typeof(CelestialSystem), nameof(CelestialSystem.OnPreRender)),
+        (typeof(Program), "Render"),
+        (typeof(Universe), nameof(Universe.OnDrawUi)),
+        (typeof(Program), "PostRender"),
+        // Orbit work that can run long: flight plans and their impact search.
+        (typeof(VehicleUpdateState), nameof(VehicleUpdateState.RecalculateFlightPlan)),
+        (typeof(BurnPlan), nameof(BurnPlan.CalculateNewFlightPlansFromFlightComputerOnly)),
+        (typeof(FlightPlan), "CalculateConicPatch"),
+        (typeof(PatchedConic), nameof(PatchedConic.SearchForParentCollision)),
+        (typeof(Vehicle), nameof(Vehicle.UpdatePerFrameData)),
+        (typeof(GroundTrackWindow), nameof(GroundTrackWindow.DrawGroundTrack)),
+    ];
+
+    private static readonly Dictionary<MethodBase, FrameProfiler.Section> Sections = new();
+
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        foreach (var (type, name) in Targets)
+        {
+            var methods = AccessTools.GetDeclaredMethods(type)
+                                     .Where(m => m.Name == name && !m.IsAbstract && !m.ContainsGenericParameters)
+                                     .ToList();
+            if (methods.Count == 0)
+            {
+                Log.Warn($"[stutter] KSA has no {type.Name}.{name} to time");
+                continue;
+            }
+            FrameProfiler.Section section = FrameProfiler.Define($"KSA {type.Name}.{name}");
+            foreach (MethodInfo method in methods)
+            {
+                Sections[method] = section;
+                yield return method;
+            }
+        }
+    }
+
+    // First in, and the finalizer last out, so the mod's hooks are inside.
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.First)]
+    private static void Prefix(MethodBase __originalMethod, out FrameProfiler.Measurement __state)
+    {
+        __state = Sections.TryGetValue(__originalMethod, out FrameProfiler.Section? section)
+            ? section.Measure()
+            : default;
+    }
+
+    // Runs also when the method throws.
+    [HarmonyFinalizer]
+    private static void Finalizer(FrameProfiler.Measurement __state) => __state.Dispose();
 }

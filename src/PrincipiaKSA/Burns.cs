@@ -1,10 +1,46 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Brutal.Numerics;
 using HarmonyLib;
 using KSA;
-using PrincipiaKSA.Patches;
 
 namespace PrincipiaKSA;
+
+// KSA's planned burns on Principia's path: each burn's patch and body from
+// the n-body state (BurnAnchor), burns KSA's conics don't reach kept
+// (BurnPatchRescue), and the flight computer's target re-aimed
+// (BurnTargetRefresher).
+
+// KSA's burn plans, as the mod reads them.
+internal static class BurnPlans
+{
+    // Every burn of the plan, in its order.
+    public static IEnumerable<Burn> All(this BurnPlan plan)
+    {
+        for (int i = 0; i < plan.BurnCount; i++)
+        {
+            if (plan.TryGetBurn(i, out Burn? burn) && burn != null)
+            {
+                yield return burn;
+            }
+        }
+    }
+
+    // When the vessel makes a burn. A departure planned on the parent's orbit
+    // (the transfer planner's, Burn.ParentDepartureBurn) is a vessel burn at
+    // ParentDepartureTime, whose Δv KSA computes (CalculateTransferBurn); its
+    // Time and Patch are the parent's.
+    public static UniverseTime VesselTime(this Burn burn) =>
+        burn.ParentDepartureBurn ? burn.ParentDepartureTime : burn.Time;
+
+    // Whether a burn with Δv other than `except` comes before `time` (or at
+    // it too, `inclusive`): where the flight plan, not the prediction, is
+    // the vessel's path.
+    public static bool AnyWithDeltaVBefore(this BurnPlan plan, UniverseTime time, bool inclusive,
+                                           Burn? except = null) =>
+        plan.All().Any(b => b != except && b.HasDeltaV && !b.IsInterstellar &&
+                            (inclusive ? b.VesselTime() <= time : b.VesselTime() < time));
+}
 
 // Where a maneuver node's burn is on Principia's path, and the body it is
 // about. KSA plans a burn's Δv in prograde/normal/radial about the parent of
@@ -13,10 +49,11 @@ namespace PrincipiaKSA;
 // about whatever body the conics had then. KSA flies the burn from the
 // vessel's real orbit, about the body whose sphere of influence the vessel is
 // really in. So the anchor applies KSA's own sphere-of-influence rules
-// (Spheres) to the n-body position at the burn time, and KSA gets a patch with the n-body state
-// there (BurnPatchAnchor): the node's arrows, the flight plan, the drag step,
-// KSA's burn editor and the flight computer's target all have the body and
-// state the burn will be flown from.
+// (Spheres) to the n-body position at the burn time, and KSA gets a patch
+// with the n-body state there (BurnPatchAnchor): the node's arrows, the
+// flight plan, the drag step, KSA's burn editor and the flight computer's
+// target all have the body and state the burn will be flown from.
+
 internal static class BurnAnchor
 {
     // The n-body state at the burn time relative to Parent (Cce axes), from
@@ -35,7 +72,7 @@ internal static class BurnAnchor
     public static Anchor? Get(Burn burn)
     {
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         // Being flown, or past: KSA's, from the vessel's orbit.
         if (!(t > now) || burn.ParentDepartureBurn || burn.IsInterstellar || burn.Vehicle is not { } vehicle ||
             vehicle.Orbit.Parent is not Astronomical vesselParent || PrincipiaSystem.Current is not { } system)
@@ -69,7 +106,7 @@ internal static class BurnAnchor
             {
                 return null;
             }
-            int index = Spheres.Of(system).Of(ephemeris, from, state.Q.ToDouble3(), t);
+            int index = system.Spheres.Of(ephemeris, from, state.Q.ToDouble3(), t);
             Astronomical parent = system.Bodies[index];
             if (parent is not IParentBody parentBody)
             {
@@ -110,8 +147,8 @@ internal static class BurnAnchor
         {
             return path;
         }
-        if (Settings.ShowFlightPlan && Predictor.LatestPlan is { StateTimes.Length: > 1 } plan &&
-            plan.Vehicle == vehicle && plan.StateTimes[0] <= t && t <= plan.StateTimes[^1] && !Burning(plan, t))
+        if (Predictor.PlanFor(vehicle) is { StateTimes.Length: > 1 } plan &&
+            plan.StateTimes[0] <= t && t <= plan.StateTimes[^1] && !Burning(plan, t))
         {
             return new BurnNode.NodePath(plan.Line, plan.Times[0], double.NaN, plan.StateTimes, plan.States);
         }
@@ -125,7 +162,7 @@ internal static class BurnAnchor
     public static string Explain(Burn burn)
     {
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         string H(double x) => double.IsFinite(x) ? $"{(x - now) / 3600:F1}" : "∞";
         string Span(double[]? times) => times is { Length: > 0 } ? $"{H(times[0])}–{H(times[^1])} h" : "none";
         if (!(t > now) || burn.ParentDepartureBurn || burn.IsInterstellar)
@@ -133,10 +170,10 @@ internal static class BurnAnchor
             return "past, a departure or interstellar";
         }
         Vehicle vehicle = burn.Vehicle;
-        NodeTrack? track = Predictor.LatestNodes is { } nodes && nodes.Vehicle == vehicle &&
+        NodeTrack? track = Predictor.NodesFor(vehicle) is { } nodes &&
                            nodes.ByBurn.TryGetValue(burn, out NodeTrack? found) ? found : null;
-        Prediction? plan = Predictor.LatestPlan is { } p && p.Vehicle == vehicle ? p : null;
-        Prediction? coast = Predictor.Latest is { } c && c.Vehicle == vehicle ? c : null;
+        Prediction? plan = Predictor.PlanFor(vehicle);
+        Prediction? coast = Predictor.PredictionFor(vehicle);
         string anchor = Anchors.TryGetValue(burn, out Anchor? last)
             ? $"last anchor at {H(last.Time)} h about {last.Parent.Id}"
             : "never anchored";
@@ -164,7 +201,7 @@ internal static class BurnAnchor
             return;
         }
         Logged.AddOrUpdate(burn, new StrongBox<(IParentBody?, Astronomical)>((theirs, anchor.Parent)));
-        double hours = (anchor.Time - GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime())) / 3600;
+        double hours = (anchor.Time - GameTime.Now) / 3600;
         Log.Info($"[node] {burn.Vehicle.Id}: the burn in {hours:F1} h is about {anchor.Parent.Id}, where Principia's " +
                  $"path is then; KSA's conics have the vessel about {(theirs as IObjectId)?.Id ?? "nothing"}");
     }
@@ -229,23 +266,10 @@ internal static class BurnPatchRescue
     [HarmonyTranspiler]
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        var find = AccessTools.Method(typeof(FlightPlan), nameof(FlightPlan.TryFindPatch));
-        int replaced = 0;
-        foreach (CodeInstruction instruction in instructions)
-        {
-            if (instruction.Calls(find))
-            {
-                instruction.opcode = System.Reflection.Emit.OpCodes.Call;
-                instruction.operand = AccessTools.Method(typeof(BurnPatchRescue), nameof(TryFindPatch));
-                replaced++;
-            }
-            yield return instruction;
-        }
-        if (replaced == 0)
-        {
-            Log.Warn("[node] BurnPlan.CalculateNewFlightPlansFromFlightComputerOnly no longer looks up patches; " +
-                     "KSA may delete burns its conics don't reach");
-        }
+        return Patching.ReplaceCalls(instructions, "[node] BurnPlan.CalculateNewFlightPlansFromFlightComputerOnly " +
+                                     "no longer looks up patches; KSA may delete burns its conics don't reach",
+            (AccessTools.Method(typeof(FlightPlan), nameof(FlightPlan.TryFindPatch)),
+             AccessTools.Method(typeof(BurnPatchRescue), nameof(TryFindPatch))));
     }
 
     // FlightPlan.TryFindPatch, with the burn's patch on Principia's path where
@@ -260,9 +284,9 @@ internal static class BurnPatchRescue
         try
         {
             Burn? unanchored = null;
-            for (int i = 0; i < burns.BurnCount; i++)
+            foreach (Burn burn in burns.All())
             {
-                if (!burns.TryGetBurn(i, out Burn? burn) || burn == null || burn.ImpulseTime != time)
+                if (burn.ImpulseTime != time)
                 {
                     continue;
                 }
@@ -272,7 +296,7 @@ internal static class BurnPatchRescue
                     if (!Logged.TryGetValue(burn, out _))
                     {
                         Logged.AddOrUpdate(burn, new object());
-                        double hours = (anchor.Time - GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime())) / 3600;
+                        double hours = (anchor.Time - GameTime.Now) / 3600;
                         Log.Info($"[node] {burn.Vehicle.Id}: KSA's conics don't reach the burn in {hours:F1} h; " +
                                  "it is held on Principia's path");
                     }
@@ -299,7 +323,7 @@ internal static class BurnPatchRescue
             return;
         }
         Interlocked.Exchange(ref _nextDump, tick + 5 * System.Diagnostics.Stopwatch.Frequency);
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         string H(UniverseTime x) =>
             GameTime.ToSecondsSinceJ2000(x) is var s && double.IsFinite(s) ? $"{(s - now) / 3600:F1}" : "∞";
         string Patches(FlightPlan? plan) => plan == null || plan.Patches.Count == 0
@@ -322,5 +346,113 @@ internal static class BurnPatchRescue
             }
         }
         Log.Info(string.Join(Environment.NewLine, lines));
+    }
+}
+
+// Keeps KSA's auto-burn aimed for the n-body trajectory. KSA fixes a burn's
+// direction once, when it loads the burn, but the n-body path moves on (a
+// fraction of a degree misses the Moon by thousands of km). Until the flight
+// computer starts aligning, KSA's own target is recomputed every quarter
+// second from the burn's patch: Principia's state at the burn time
+// (BurnAnchor), else KSA's conic.
+internal static class BurnTargetRefresher
+{
+    private static readonly long Interval = Stopwatch.Frequency / 4;
+    private static long _next;
+
+    // Re-aims are logged from this size, at most every LogInterval.
+    private const double LoggedDegrees = 0.1;
+    private static readonly long LogInterval = 10 * Stopwatch.Frequency;
+    private static long _nextLog;
+
+    public static long Refreshes;
+    public static double LastChangeDegrees;
+
+    private static BurnTarget? _flying, _finished;
+    private static double _flyingTargetDeltaV;
+
+    // Logs each burn KSA flies: its ignition, and the Δv and orbit at the end.
+    private static void Monitor(Vehicle vehicle)
+    {
+        BurnTarget? target = vehicle.FlightComputer.Burn;
+        if (_flying == null && target is { StartedAt: { } started } && target != _finished)
+        {
+            _flying = target;
+            _flyingTargetDeltaV = target.DeltaVTargetCci.Length();
+            Log.Info($"[burns] {vehicle.Id}: ignition {GameTime.Seconds(target.ImpulsiveInstant, started):F1} s from " +
+                     $"the burn time (planned {GameTime.Seconds(target.ImpulsiveInstant, target.IgnitionTime):F1} s), " +
+                     $"Δv target {_flyingTargetDeltaV:F2} m/s, mode {vehicle.FlightComputer.BurnMode}");
+        }
+        else if (_flying != null &&
+                 (target != _flying || !_flying.StartedAt.HasValue || vehicle.FlightComputer.AutoBurnCompleted))
+        {
+            _finished = _flying;
+            Orbit o = vehicle.Orbit;
+            Log.Info($"[burns] {vehicle.Id}: burn ended, Δv flown {_flying.DeltaVAccumCci.Length():F2} of " +
+                     $"{_flyingTargetDeltaV:F2} m/s ({_flying.DeltaVToGoCci.Length():F2} m/s left), " +
+                     $"now around {(o.Parent as IObjectId)?.Id}: pe {o.PeriapsisAltitude / 1000:F1} km, " +
+                     $"ap {o.ApoapsisAltitude / 1000:F1} km");
+            _flying = null;
+        }
+    }
+
+    // Main thread, before the frame's jobs, which share the target.
+    public static void Tick()
+    {
+        try
+        {
+            if (Program.ControlledVehicle is { } controlled)
+            {
+                Monitor(controlled);
+            }
+            Refresh();
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[burns] {e.Message}");
+        }
+    }
+
+    private static void Refresh()
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (now < _next || PrincipiaSystem.Current is not { Driving: true } ||
+            Program.ControlledVehicle is not { } vehicle)
+        {
+            return;
+        }
+        _next = now + Interval;
+        FlightComputer fc = vehicle.FlightComputer;
+        BurnTarget? target = fc.Burn;
+        if (target == null || target.StartedAt.HasValue || target.FixedDurationSeconds.HasValue ||
+            Universe.GetElapsedTime() >= target.AlignmentStartTime)
+        {
+            return;
+        }
+        Burn? burn = vehicle.BurnPlan.FindFirstExecutableBurn();
+        if (burn == null || !burn.HasDeltaV || burn.ImpulseTime != target.ImpulsiveInstant || burn.IsInterstellar)
+        {
+            return;  // A fresh burn has no Δv until it is dragged.
+        }
+        float3 before = target.DeltaVTargetCci;
+        UniverseTime? plannedIgnition = target.PlannedIgnition;
+        float? throttle = target.Throttle;
+        target.UpdateFromBurn(burn);
+        target.PlannedIgnition = plannedIgnition;
+        target.Throttle = throttle;
+        Refreshes++;
+
+        float3 after = target.DeltaVTargetCci;
+        double norms = (double)before.Length() * after.Length();
+        double change = norms > 0
+            ? Math.Acos(Math.Clamp(float3.Dot(before, after) / norms, -1, 1)) * 180 / Math.PI
+            : 0;
+        LastChangeDegrees = change;
+        if (change >= LoggedDegrees && now >= _nextLog)
+        {
+            _nextLog = now + LogInterval;
+            Log.Info($"[burns] {vehicle.Id}: burn target re-aimed by {change:F3}° for the n-body trajectory " +
+                     $"(burn in {GameTime.Seconds(Universe.GetElapsedTime(), burn.ImpulseTime):F0} s)");
+        }
     }
 }

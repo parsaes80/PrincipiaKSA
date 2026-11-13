@@ -1,6 +1,6 @@
 using Brutal.ImGuiApi;
-using HarmonyLib;
 using Brutal.Numerics;
+using HarmonyLib;
 using KSA;
 
 namespace PrincipiaKSA;
@@ -142,7 +142,7 @@ internal static class SettingsWindow
                  Settings.PredictionStepChoices.Length, $"{Settings.PredictionSteps:N0}");
         if (Settings.ShowPrediction)
         {
-            Summary(Predictor.Latest);
+            Summary(Predictor.PredictionFor(Program.ControlledVehicle));
         }
         if (Predictor.LastError is { } error)
         {
@@ -203,7 +203,7 @@ internal static class SettingsWindow
         {
             BodyCombo(system, "With", ref Settings.SecondaryBody, "Automatic (largest moon or parent)");
         }
-        if (Predictor.Latest is { } p)
+        if (Predictor.PredictionFor(Program.ControlledVehicle) is { } p)
         {
             ImGui.TextDisabled($"Drawn {p.Frame.Describe()}");
         }
@@ -336,11 +336,11 @@ internal static class SettingsWindow
         }
         BurnPlan plan = vehicle.BurnPlan;
         BurnTarget? target = vehicle.FlightComputer.Burn;
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         int shown = 0;
-        for (int i = 0; i < plan.BurnCount; i++)
+        foreach (Burn burn in plan.All())
         {
-            if (!plan.TryGetBurn(i, out Burn? burn) || burn == null || !burn.HasDeltaV)
+            if (!burn.HasDeltaV)
             {
                 continue;
             }
@@ -352,14 +352,14 @@ internal static class SettingsWindow
                 // its parent's orbit, not yet one of its own.
                 double departure = GameTime.ToSecondsSinceJ2000(burn.ParentDepartureTime);
                 ImGui.Text($"Departure {++shown}: Δv {dv.Length():F1} m/s ({components}), " +
-                           $"in {MapOverlay.Duration(departure - now)}");
+                           $"in {Format.Duration(departure - now)}");
                 ImGui.TextDisabled("  Flown once made a vessel burn (\"Make vehicle transfer flightplan\")");
                 continue;
             }
             double t = GameTime.ToSecondsSinceJ2000(burn.ImpulseTime);
             string state = target != null && target.ImpulsiveInstant == burn.ImpulseTime && target.StartedAt.HasValue
                 ? $"burning, {target.DeltaVToGoCci.Length():F1} m/s to go"
-                : $"in {MapOverlay.Duration(t - now)}";
+                : $"in {Format.Duration(t - now)}";
             ImGui.Text($"Burn {++shown}: Δv {dv.Length():F1} m/s ({components}), {state}");
         }
         if (shown == 0)
@@ -368,7 +368,7 @@ internal static class SettingsWindow
         }
         else if (Settings.ShowFlightPlan)
         {
-            Summary(Predictor.LatestPlan);
+            Summary(Predictor.PlanFor(vehicle));
         }
         if (BurnTargetRefresher.Refreshes > 0)
         {
@@ -390,7 +390,7 @@ internal static class SettingsWindow
     private static void DrawEvents()
     {
         Section("Upcoming");
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         var events = new List<(double Time, string Text)>();
         void Add(Prediction? p, string prefix)
         {
@@ -410,8 +410,8 @@ internal static class SettingsWindow
                 events.Add((p.Times[^1], prefix + "Impact"));
             }
         }
-        if (Settings.ShowPrediction) Add(Predictor.Latest, "");
-        if (Settings.ShowFlightPlan) Add(Predictor.LatestPlan, "Plan: ");
+        Add(Predictor.PredictionFor(Program.ControlledVehicle), "");
+        Add(Predictor.PlanFor(Program.ControlledVehicle), "Plan: ");
         if (events.Count == 0)
         {
             ImGui.TextDisabled("Nothing ahead on the lines.");
@@ -426,10 +426,34 @@ internal static class SettingsWindow
         {
             foreach (var (time, text) in events.OrderBy(e => e.Time))
             {
-                ImGui.Text($"{text}  in {MapOverlay.Duration(time - now)}");
+                ImGui.Text($"{text}  in {Format.Duration(time - now)}");
             }
         }
         ImGui.EndChild();
+    }
+}
+
+// The window, once a frame: KSA's UI pass over the main viewport (StarMap's
+// [StarMapAfterGui] isn't called in this KSA).
+[HarmonyPatch(typeof(Universe), nameof(Universe.OnDrawUi))]
+internal static class WindowPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(IGameViewport inViewport)
+    {
+        if (inViewport != Program.MainViewport)
+        {
+            return;
+        }
+        using var profiled = FrameProfiler.Window.Measure();
+        try
+        {
+            SettingsWindow.Draw();
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[window] drawing the PrincipiaKSA window", e);
+        }
     }
 }
 

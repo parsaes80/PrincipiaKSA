@@ -20,6 +20,9 @@ internal static class GameTime
         : t == UniverseTime.MinValue ? double.NegativeInfinity
         : EpochSecondsSinceJ2000 + t.Seconds();
 
+    // Game time now, in seconds since J2000.
+    public static double Now => ToSecondsSinceJ2000(Universe.GetElapsedTime());
+
     public static double Seconds(UniverseTime from, UniverseTime to) =>
         ToSecondsSinceJ2000(to) - ToSecondsSinceJ2000(from);
 
@@ -32,4 +35,30 @@ internal static class GameTime
     // Calendar date for logging, ignoring the ~69 s TT-UTC offset.
     public static DateTime ToDateTime(UniverseTime t) =>
         new DateTime(2000, 1, 1, 12, 0, 0, DateTimeKind.Utc).AddSeconds(ToSecondsSinceJ2000(t));
+}
+
+// Times and distances as the window and the map markers show them.
+internal static class Format
+{
+    // "3d 04:05:06", or "04:05:06" under a day.
+    public static string Duration(double seconds)
+    {
+        var t = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return t.TotalDays >= 1 ? $"{(int)t.TotalDays}d {t.Hours:00}:{t.Minutes:00}:{t.Seconds:00}"
+                                : $"{t.Hours:00}:{t.Minutes:00}:{t.Seconds:00}";
+    }
+
+    // As KSA counts down to its markers: "T-" and its breakdown.
+    public static string Countdown(double seconds)
+    {
+        Span<char> buffer = stackalloc char[128];
+        return "T-" + new string(TimeSpanReference.ToBreakdown(seconds, buffer));
+    }
+
+    public static string Altitude(double metres) => Math.Abs(metres) switch
+    {
+        < 1e4 => $"{metres:F0} m",
+        < 1e7 => $"{metres / 1000:F1} km",
+        _ => $"{metres / 1000:N0} km",
+    };
 }

@@ -3,7 +3,7 @@ using Brutal.Numerics;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
 
 // KSA creates maneuver nodes where the mouse hovers its patched-conic lines.
 // With those hidden, the hover follows Principia's lines instead, handing KSA
@@ -83,7 +83,7 @@ internal static class OrbitHover
         {
             return null;
         }
-        double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+        double now = GameTime.Now;
         double start = Math.Max(now, GameTime.ToSecondsSinceJ2000(from));
         FrameMapper[] mappers = line.Line.Mappers();
         int2 size = viewport.Size;
@@ -208,7 +208,7 @@ internal static class FlightPlanHoverPatch
             {
                 return false;
             }
-            if (Settings.ShowPrediction && Predictor.Latest is { } prediction && prediction.Vehicle == vehicle)
+            if (Predictor.PredictionFor(vehicle) is { } prediction)
             {
                 UniverseTime now = Universe.GetElapsedTime();
                 FlightPlan plan = vehicle.FlightPlan;
@@ -254,16 +254,15 @@ internal static class BurnHoverPatch
             {
                 return false;
             }
-            Prediction? coast = Settings.ShowPrediction && Predictor.Latest is { } c && c.Vehicle == owner ? c : null;
-            Prediction? plan =
-                Settings.ShowFlightPlan && Predictor.LatestPlan is { } p && p.Vehicle == owner ? p : null;
+            Prediction? coast = Predictor.PredictionFor(owner);
+            Prediction? plan = Predictor.PlanFor(owner);
             for (int i = 0; i < __instance.BurnCount; i++)
             {
                 if (!__instance.TryGetBurn(i, out Burn? burn) || burn == null || burn.ParentDepartureBurn)
                 {
                     continue;  // A departure's preview: KSA's conic, hidden.
                 }
-                Prediction? line = AnyDeltaVBy(__instance, burn.Time) ? plan : coast;
+                Prediction? line = __instance.AnyWithDeltaVBefore(burn.Time, inclusive: true) ? plan : coast;
                 if (line == null)
                 {
                     continue;
@@ -288,20 +287,6 @@ internal static class BurnHoverPatch
             Log.WarnOnce("[hover] flight plan hover", e);
             return false;
         }
-    }
-
-    // A burn with Δv at or before `time`.
-    private static bool AnyDeltaVBy(BurnPlan burns, UniverseTime time)
-    {
-        for (int i = 0; i < burns.BurnCount; i++)
-        {
-            if (burns.TryGetBurn(i, out Burn? b) && b != null && b.HasDeltaV && !b.IsInterstellar &&
-                Predictor.VesselTime(b) <= time)
-            {
-                return true;
-            }
-        }
-        return false;
     }
 }
 
@@ -335,16 +320,15 @@ internal static class BurnMenuSnapPatch
             PeriapsisTime() = ApoapsisTime() = null;
             Camera camera = viewport.GetCamera();
             float2 mouse = Cursor.GetPosition(viewport);
-            double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+            double now = GameTime.Now;
             double start = Math.Max(now, GameTime.ToSecondsSinceJ2000(patch.StartTime));
             double end = GameTime.ToSecondsSinceJ2000(patch.EndTime);
             // The prediction for the vessel's own patches, the plan for a burn's.
             Vehicle vehicle = Program.ControlledVehicle!;
             Prediction? line = vehicle.FlightPlan.Patches.Contains(patch)
-                ? (Settings.ShowPrediction ? Predictor.Latest : null)
-                : (Settings.ShowFlightPlan ? Predictor.LatestPlan : null) ??
-                  (Settings.ShowPrediction ? Predictor.Latest : null);
-            if (line == null || line.Vehicle != vehicle)
+                ? Predictor.PredictionFor(vehicle)
+                : Predictor.PlanFor(vehicle) ?? Predictor.PredictionFor(vehicle);
+            if (line == null)
             {
                 return;
             }

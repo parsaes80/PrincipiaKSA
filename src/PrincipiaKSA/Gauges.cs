@@ -1,8 +1,7 @@
-using System.Reflection.Emit;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
 
 // KSA's Ap and Pe gauges and its warp-to-Ap/Pe buttons read the vessel's
 // osculating conic, whose apsides n-body gravity keeps moving (the Sun and
@@ -17,12 +16,12 @@ internal static class NBodyApsides
 
     public static (double Time, double Altitude)? Next(Vehicle vehicle, bool apoapsis)
     {
-        if (Predictor.Latest is not { } prediction || prediction.Vehicle != vehicle ||
+        if (Predictor.PredictionFor(vehicle) is not { } prediction ||
             !ReferenceEquals(prediction.ParentApsides.Parent, vehicle.Orbit.Parent))
         {
             return null;
         }
-        return prediction.ParentApsides.Next(apoapsis, GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime()));
+        return prediction.ParentApsides.Next(apoapsis, GameTime.Now);
     }
 
     // Replace Orbit.PeriapsisAltitude and ApoapsisAltitude in Program.UpdateGauges.
@@ -54,26 +53,12 @@ internal static class GaugeApsidesPatch
     [HarmonyTranspiler]
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        var periapsis = AccessTools.PropertyGetter(typeof(Orbit), nameof(Orbit.PeriapsisAltitude));
-        var apoapsis = AccessTools.PropertyGetter(typeof(Orbit), nameof(Orbit.ApoapsisAltitude));
-        int replaced = 0;
-        foreach (CodeInstruction instruction in instructions)
-        {
-            if (instruction.Calls(periapsis) || instruction.Calls(apoapsis))
-            {
-                instruction.operand = AccessTools.Method(typeof(NBodyApsides),
-                    instruction.Calls(periapsis) ? nameof(NBodyApsides.PeriapsisAltitude)
-                                                 : nameof(NBodyApsides.ApoapsisAltitude));
-                instruction.opcode = OpCodes.Call;
-                replaced++;
-            }
-            yield return instruction;
-        }
-        if (replaced != 2)
-        {
-            Log.Warn($"[gauges] Program.UpdateGauges reads Ap/Pe {replaced} times, not 2; " +
-                     "the gauges may show KSA's conic");
-        }
+        return Patching.ReplaceCalls(instructions, "[gauges] Program.UpdateGauges doesn't read Ap and Pe once each; " +
+                                     "the gauges may show KSA's conic", expected: 2,
+            (AccessTools.PropertyGetter(typeof(Orbit), nameof(Orbit.PeriapsisAltitude)),
+             AccessTools.Method(typeof(NBodyApsides), nameof(NBodyApsides.PeriapsisAltitude))),
+            (AccessTools.PropertyGetter(typeof(Orbit), nameof(Orbit.ApoapsisAltitude)),
+             AccessTools.Method(typeof(NBodyApsides), nameof(NBodyApsides.ApoapsisAltitude))));
     }
 }
 

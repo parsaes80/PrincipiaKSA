@@ -48,7 +48,7 @@ The same package runs on Linux and Windows (x64).
 
 | Path | What |
 |---|---|
-| `src/PrincipiaKSA/` | C# mod: StarMap entry point, Harmony patches (`Patches/`), drivers for bodies and vessels, predictor, spheres of influence, maneuver-node anchors, map overlay and window |
+| `src/PrincipiaKSA/` | C# mod, one file per feature, each with the Harmony patches it needs: StarMap entry point, the game loop, drivers for bodies and vessels, predictor, plotting frames, maneuver nodes and burns, map overlay and window |
 | `native/` | The C API (`principia_ksa.h`) over Principia's C++ core, its smoke test (`test/`), and `tools/sol_reference.cpp` (the JPL check above) |
 | `extern/` | Principia and the dependencies it needs (abseil, protobuf, re2, gipfeli, CORE-MATH, zfp, Boost's config and multiprecision), as git submodules pinned to the commits this mod is built and tested with |
 | `build.zig` | The whole build, with Zig alone: Principia, its dependencies, protoc, the native library for Linux and Windows, the C# mod, the package |

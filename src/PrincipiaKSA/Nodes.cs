@@ -1,10 +1,14 @@
-using System.Reflection.Emit;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Brutal.Numerics;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
+
+// Maneuver nodes on Principia's lines: where a node is drawn and how it is
+// dragged (BurnNode), and why, in the log (NodeDiagnostics).
 
 // Maneuver nodes on Principia's lines. KSA draws a node at its patch's conic
 // at the burn time and drags it along that conic, which far ahead can be
@@ -29,14 +33,13 @@ internal static class BurnNode
             return null;
         }
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
-        if (Predictor.LatestNodes is { } nodes && nodes.Vehicle == vehicle &&
+        if (Predictor.NodesFor(vehicle) is { } nodes &&
             nodes.ByBurn.TryGetValue(burn, out NodeTrack? track) && t >= track.Times[0] && t <= track.End)
         {
             return new NodePath(track.Line, track.Start, nodes.Windows.TryGetValue(burn, out double w) ? w : 0,
                                 track.StateTimes, track.States);
         }
-        if (IsFirst(burn) && Settings.ShowPrediction && Predictor.Latest is { } coast && coast.Vehicle == vehicle &&
-            Covers(coast, t))
+        if (IsFirst(burn) && Predictor.PredictionFor(vehicle) is { } coast && Covers(coast, t))
         {
             return new NodePath(coast.Line, coast.Times[0],
                                 window ? Predictor.NodeWindow(burn.Patch.Orbit, t - coast.Times[0]) : double.NaN,
@@ -49,8 +52,8 @@ internal static class BurnNode
     private static Prediction? DrawnLine(Burn burn)
     {
         Vehicle vehicle = burn.Vehicle;
-        Prediction? coast = Settings.ShowPrediction && Predictor.Latest is { } c && c.Vehicle == vehicle ? c : null;
-        Prediction? plan = Settings.ShowFlightPlan && Predictor.LatestPlan is { } p && p.Vehicle == vehicle ? p : null;
+        Prediction? coast = Predictor.PredictionFor(vehicle);
+        Prediction? plan = Predictor.PlanFor(vehicle);
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
         if (IsFirst(burn) && Covers(coast, t))
         {
@@ -59,20 +62,9 @@ internal static class BurnNode
         return Covers(plan, t) ? plan : Covers(coast, t) ? coast : null;
     }
 
-    // No burn with Δv comes before it.
-    private static bool IsFirst(Burn burn)
-    {
-        BurnPlan burns = burn.Vehicle.BurnPlan;
-        for (int i = 0; i < burns.BurnCount; i++)
-        {
-            if (burns.TryGetBurn(i, out Burn? other) && other != null && other != burn && other.HasDeltaV &&
-                !other.IsInterstellar && Predictor.VesselTime(other) < burn.Time)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
+    // No burn with Δv comes before it: its path is the prediction.
+    private static bool IsFirst(Burn burn) =>
+        !burn.Vehicle.BurnPlan.AnyWithDeltaVBefore(burn.Time, inclusive: false, except: burn);
 
     private static bool Covers(Prediction? line, double t) =>
         line is { Times.Length: > 1 } && t >= line.Times[0] && t <= line.Times[^1];
@@ -85,7 +77,7 @@ internal static class BurnNode
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
         if (Path(burn) is { } path)
         {
-            bool track = Predictor.LatestNodes is { } nodes && nodes.ByBurn.ContainsKey(burn);
+            bool track = Predictor.NodesFor(burn.Vehicle) is { } nodes && nodes.ByBurn.ContainsKey(burn);
             return (path.Line.EclAt(t), track ? Source.Track : Source.Prediction);
         }
         return DrawnLine(burn) is { } line
@@ -112,7 +104,7 @@ internal static class BurnNode
         FlightPlan? source = null;
         for (int j = burns.TryGetBurnIndex(burn) - 1; j >= 0 && source == null; j--)
         {
-            if (burns.TryGetBurn(j, out Burn? previous) && previous != null && Predictor.VesselTime(previous) >= now)
+            if (burns.TryGetBurn(j, out Burn? previous) && previous != null && previous.VesselTime() >= now)
             {
                 source = previous.FlightPlan;
             }
@@ -176,22 +168,10 @@ internal static class BurnGizmoPositionPatch
     [HarmonyTranspiler]
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        var position = AccessTools.PropertyGetter(typeof(Burn), nameof(Burn.PositionCce));
-        int positions = 0;
-        foreach (CodeInstruction instruction in instructions)
-        {
-            if (instruction.Calls(position))
-            {
-                instruction.opcode = OpCodes.Call;
-                instruction.operand = AccessTools.Method(typeof(BurnNode), nameof(BurnNode.PositionCce));
-                positions++;
-            }
-            yield return instruction;
-        }
-        if (positions == 0)
-        {
-            Log.Warn("[node] Burn.UpdateGizmos no longer reads Burn.PositionCce; nodes stay on KSA's conics");
-        }
+        return Patching.ReplaceCalls(instructions, "[node] Burn.UpdateGizmos no longer reads Burn.PositionCce; " +
+                                     "nodes stay on KSA's conics",
+            (AccessTools.PropertyGetter(typeof(Burn), nameof(Burn.PositionCce)),
+             AccessTools.Method(typeof(BurnNode), nameof(BurnNode.PositionCce))));
     }
 }
 
@@ -245,7 +225,7 @@ internal static class BurnGizmoDragPatch
             }
             Camera camera = inViewPort.GetCamera();
             float2 mouse = Cursor.GetPosition(inViewPort);
-            double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
+            double now = GameTime.Now;
             double t = GameTime.ToSecondsSinceJ2000(burn.Time);
             double reach = path.Window > 0 ? 0.9 * path.Window : double.PositiveInfinity;
             (double coverStart, double coverEnd) = BurnNode.KsaCoverage(burn);
@@ -305,6 +285,216 @@ internal static class BurnGizmoDragPatch
             Log.WarnOnce("[node] maneuver node drag", e);
             __result = false;
             return false;  // Hold still rather than follow KSA's conic.
+        }
+    }
+}
+
+// Why a maneuver node doesn't follow the cursor, or isn't where it should be
+// ("[node]" in the log). Main thread.
+internal static class NodeDiagnostics
+{
+    private static readonly long Interval = Stopwatch.Frequency / 2;
+
+    // A drag: each frame's outcome, summed and logged every Interval.
+    private static Burn? _dragged;
+    private static long _since, _lastFrame;
+    private static readonly Dictionary<string, int> Outcomes = new();
+    private static string _context = "";
+
+    private static double Now => GameTime.Now;
+    private static string Hours(double t) => $"{(t - Now) / 3600:F2} h";
+
+    // One frame of dragging `burn` along its path: what the drag step did.
+    public static void Drag(Burn burn, string outcome, BurnNode.NodePath? path = null)
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_dragged != burn || now - _lastFrame > Interval)
+        {
+            Flush();
+            _dragged = burn;
+            _since = now;
+        }
+        _lastFrame = now;
+        Outcomes[outcome] = Outcomes.GetValueOrDefault(outcome) + 1;
+        _context = Context(burn, path);
+        if (now - _since >= Interval)
+        {
+            Flush();
+            _since = now;
+        }
+    }
+
+    // Logs the drag so far if any frame didn't simply follow the cursor.
+    private static void Flush()
+    {
+        if (_dragged == null || Outcomes.Count == 0)
+        {
+            return;
+        }
+        int frames = Outcomes.Values.Sum();
+        if (Outcomes.Keys.Any(k => k != "followed"))
+        {
+            string outcomes = string.Join(", ", Outcomes.OrderByDescending(o => o.Value)
+                                                        .Select(o => $"{o.Key} ×{o.Value}"));
+            Log.Info($"[node] dragging the node in {Hours(GameTime.ToSecondsSinceJ2000(_dragged.Time))}, " +
+                     $"{frames} frames: {outcomes}; {_context}");
+        }
+        Outcomes.Clear();
+    }
+
+    // What the drag works from: the node's track and how old it is.
+    private static string Context(Burn burn, BurnNode.NodePath? path)
+    {
+        var text = new StringBuilder();
+        double t = GameTime.ToSecondsSinceJ2000(burn.Time);
+        if (Predictor.NodesFor(burn.Vehicle) is { } nodes && nodes.ByBurn.TryGetValue(burn, out NodeTrack? track))
+        {
+            double window = nodes.Windows.GetValueOrDefault(burn);
+            double centre = track.End - window;
+            text.Append($"its track was published {Clock.Ms(Stopwatch.GetTimestamp() - nodes.Computed):F0} ms ago, " +
+                        $"for the node at {Hours(centre)} ±{window / 3600:F2} h (now at {Hours(t)}, " +
+                        $"{Math.Abs(t - centre) / 3600:F2} h from that)");
+        }
+        else
+        {
+            text.Append(path != null
+                ? "no track of its own yet: on the prediction's line"
+                : $"no track and no line: {BurnAnchor.Explain(burn)}");
+        }
+        if (Predictor.PlanFor(burn.Vehicle) is { } plan)
+        {
+            text.Append($"; the flight plan with the tracks took {plan.ComputeMs:F0} ms");
+        }
+        return text.ToString();
+    }
+
+    // Each node's placement as last logged, and when.
+    private sealed record Placement(string Signature, long Logged);
+    private static readonly ConditionalWeakTable<Burn, Placement> Placements = new();
+    private static readonly ConditionalWeakTable<Burn, object> Seen = new();
+
+    // After KSA places a node's sphere and arrows: logs where they went
+    // whenever that changes in a way that matters (another source of position,
+    // another body, off screen, not a number).
+    public static void Placed(Burn burn, IViewport viewport)
+    {
+        if (!viewport.IsMain() || burn.ParentDepartureBurn || burn.Vehicle is not { } vehicle ||
+            vehicle != Program.ControlledVehicle || !KsaConics.Hidden(vehicle))
+        {
+            return;
+        }
+        double t = GameTime.ToSecondsSinceJ2000(burn.Time);
+        if (!Seen.TryGetValue(burn, out _))
+        {
+            Seen.Add(burn, new object());
+            Log.Info($"[node] KSA made a node object for the burn in {Hours(t)} " +
+                     $"(Δv {burn.DeltaVVlf.Length():F1} m/s); the mod's tracks and anchors are per object");
+        }
+        PatchedConic patch = burn.Patch;
+        IParentBody parent = patch.Orbit.Parent;
+        string parentId = (parent as IObjectId)?.Id ?? "?";
+        BurnAnchor.Anchor? anchor = BurnAnchor.Cached(burn);
+        bool anchored = anchor != null && ReferenceEquals(anchor.Patch, patch);
+        double3 cce = BurnNode.PositionCce(burn);
+        BurnNode.Source source = BurnNode.LastSource.TryGetValue(burn, out var s) ? s.Value : BurnNode.Source.KsaConic;
+        double3 ecl = parent.GetPositionEclFromCce(cce);
+        StateVectors sv = patch.Orbit.GetStateVectorsAt(burn.Time);
+        bool finite = IsFinite(ecl) && IsFinite(sv.PositionCci) && IsFinite(sv.VelocityCci);
+        Camera camera = viewport.GetCamera();
+        float2 screen = finite ? camera.EclToScreen(ecl) : default;
+        int2 size = viewport.Size;
+        bool onScreen = finite && float.IsFinite(screen.X) && float.IsFinite(screen.Y) &&
+                        screen.X >= 0 && screen.Y >= 0 && screen.X <= size.X && screen.Y <= size.Y;
+        string signature = $"{source}|{parentId}|{anchored}|{finite}|{onScreen}";
+        long now = Stopwatch.GetTimestamp();
+        if (Placements.TryGetValue(burn, out Placement? last) &&
+            (last.Signature == signature || now - last.Logged < Interval / 2))
+        {
+            return;
+        }
+        Placements.AddOrUpdate(burn, new Placement(signature, now));
+        var text = new StringBuilder();
+        text.Append($"[node] the node in {Hours(t)} is drawn from {Describe(source)}, about {parentId} " +
+                    $"({(anchored ? "anchored on Principia's path" : "on KSA's own patch")}), ");
+        text.Append(!finite ? "NOT A NUMBER (position or arrows)" :
+                    onScreen ? $"on screen at ({screen.X:F0}, {screen.Y:F0})" :
+                    $"OFF SCREEN at ({screen.X:F0}, {screen.Y:F0}) of {size.X}×{size.Y}");
+        text.Append($"; its patch {Hours(GameTime.ToSecondsSinceJ2000(patch.StartTime))} to " +
+                    $"{Hours(GameTime.ToSecondsSinceJ2000(patch.EndTime))}, e {patch.Orbit.Eccentricity:F4}");
+        if (DrawnPosition(burn, t) is { } line && finite)
+        {
+            text.Append($"; {(ecl - line).Length() / 1000:N0} km from Principia's line there");
+        }
+        if (!anchored || !finite || !onScreen || source is BurnNode.Source.KsaConic or BurnNode.Source.LastDrawn)
+        {
+            text.Append($"; {Candidates(burn, t, ecl, parent)}; {BurnAnchor.Explain(burn)}");
+        }
+        Log.Info(text.ToString());
+    }
+
+    private static string Describe(BurnNode.Source source) => source switch
+    {
+        BurnNode.Source.Track => "its own track",
+        BurnNode.Source.Prediction => "the prediction's line",
+        BurnNode.Source.FlightPlan => "the flight plan's line",
+        BurnNode.Source.LastDrawn => "where it was last drawn (no line covers it now)",
+        _ => "KSA's conic (no line covers it)",
+    };
+
+    // Where each line, and KSA's own conic, would put the node, as distances
+    // from where it was drawn, with the stretch of each line it is on.
+    private static string Candidates(Burn burn, double t, double3 drawn, IParentBody parent)
+    {
+        var parts = new List<string>();
+        string Away(double3 p) => IsFinite(p) ? $"{(p - drawn).Length() / 1000:N0} km away" : "not a number";
+        void Add(string name, Line? line)
+        {
+            if (line is not { } l || l.Times.Length < 2 || !(l.Times[0] <= t && t <= l.Times[^1]))
+            {
+                parts.Add($"{name}: doesn't cover it");
+                return;
+            }
+            Stretch s = l.Stretches[l.StretchAt(t)];
+            parts.Add($"{name}: {Away(l.EclAt(t))} (stretch about {s.Body.Id}, drawn {s.Frame.Describe()})");
+        }
+        Add("its track", BurnNode.Path(burn)?.Line);
+        Add("flight plan", Predictor.PlanFor(burn.Vehicle)?.Line);
+        Add("prediction", Predictor.PredictionFor(burn.Vehicle)?.Line);
+        parts.Add($"KSA's conic: {Away(parent.GetPositionEclFromCce(burn.PositionCce))}");
+        parts.Add($"{(parent as IObjectId)?.Id} now: {Away(parent.GetPositionEclFromCce(double3.Zero))}");
+        return "candidates: " + string.Join(", ", parts);
+    }
+
+    // Where the drawn lines put the vessel at t, if one covers it.
+    private static double3? DrawnPosition(Burn burn, double t)
+    {
+        foreach (Prediction? p in new[] { Predictor.PlanFor(burn.Vehicle), Predictor.PredictionFor(burn.Vehicle) })
+        {
+            if (p is { Times.Length: > 1 } && p.Times[0] <= t && t <= p.Times[^1])
+            {
+                return p.Line.EclAt(t);
+            }
+        }
+        return null;
+    }
+
+    private static bool IsFinite(double3 v) => double.IsFinite(v.X) && double.IsFinite(v.Y) && double.IsFinite(v.Z);
+}
+
+// After KSA places a node's sphere and arrows (Burn.UpdateGizmos).
+[HarmonyPatch(typeof(Burn), nameof(Burn.UpdateGizmos))]
+internal static class BurnGizmoDiagnosticsPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(Burn __instance, IViewport inViewport)
+    {
+        try
+        {
+            NodeDiagnostics.Placed(__instance, inViewport);
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[node] checking a node's placement", e);
         }
     }
 }

@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Reflection.Emit;
 using HarmonyLib;
 using KSA;
 using StarMap.API;
@@ -43,20 +45,8 @@ public class PrincipiaKSA
             Log.Error($"Loading Principia failed: {e}");
         }
 
-        // Class by class, so a hook broken by a game update only disables
-        // itself (PatchAll stops at the first failure).
         _harmony = new Harmony(HarmonyId);
-        foreach (Type type in AccessTools.GetTypesFromAssembly(typeof(PrincipiaKSA).Assembly))
-        {
-            try
-            {
-                _harmony.CreateClassProcessor(type).Patch();
-            }
-            catch (Exception e)
-            {
-                Log.Error($"Patch {type.Name} failed and is disabled: {e.InnerException?.Message ?? e.Message}");
-            }
-        }
+        Patching.ApplyAll(_harmony);
         Predictor.Start();
         Log.Info($"Harmony {typeof(Harmony).Assembly.GetName().Version} ready");
         foreach (var method in _harmony.GetPatchedMethods())
@@ -80,5 +70,61 @@ public class PrincipiaKSA
         PrincipiaSystem.Clear();
         Native.DisableLogging();
         Log.Info("Unloaded");
+    }
+}
+
+// How the mod hooks into KSA (Harmony), and the one helper its transpilers
+// share.
+internal static class Patching
+{
+    // Every patch class in the mod, class by class, so a hook broken by a
+    // game update only disables itself (PatchAll stops at the first failure).
+    public static void ApplyAll(Harmony harmony)
+    {
+        foreach (Type type in AccessTools.GetTypesFromAssembly(typeof(PrincipiaKSA).Assembly))
+        {
+            try
+            {
+                harmony.CreateClassProcessor(type).Patch();
+            }
+            catch (Exception e)
+            {
+                Log.Error($"Patch {type.Name} failed and is disabled: {e.InnerException?.Message ?? e.Message}");
+            }
+        }
+    }
+
+    // A transpiler's work: every call to one of `swaps`' originals becomes a
+    // call to its replacement (a static method with the same arguments, the
+    // instance first). Logs `missing` where there are no such calls, or not
+    // `expected` of them: KSA's code changed under the patch.
+    public static IEnumerable<CodeInstruction> ReplaceCalls(IEnumerable<CodeInstruction> instructions,
+                                                            string missing,
+                                                            params (MethodInfo From, MethodInfo To)[] swaps) =>
+        ReplaceCalls(instructions, missing, null, swaps);
+
+    public static IEnumerable<CodeInstruction> ReplaceCalls(IEnumerable<CodeInstruction> instructions,
+                                                            string missing, int? expected,
+                                                            params (MethodInfo From, MethodInfo To)[] swaps)
+    {
+        int replaced = 0;
+        foreach (CodeInstruction instruction in instructions)
+        {
+            foreach (var (from, to) in swaps)
+            {
+                if (instruction.Calls(from))
+                {
+                    instruction.opcode = OpCodes.Call;
+                    instruction.operand = to;
+                    replaced++;
+                    break;
+                }
+            }
+            yield return instruction;
+        }
+        if (expected is int n ? replaced != n : replaced == 0)
+        {
+            Log.Warn($"{missing} ({replaced} found)");
+        }
     }
 }

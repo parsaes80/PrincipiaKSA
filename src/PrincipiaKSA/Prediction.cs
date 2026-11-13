@@ -170,14 +170,39 @@ internal sealed record NodeTracks(Vehicle Vehicle, FrameSpec Frame, IReadOnlyDic
         ByBurn.Values.Distinct(ReferenceEqualityComparer.Instance).Cast<NodeTrack>().ToArray();
 }
 
-// The bodies a plotting frame is attached to.
-internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int CentreIndex,
-                                 Astronomical? Secondary, int SecondaryIndex)
+// A path between its integrated samples: the cubic Hermite curve through two
+// samples' positions and velocities, as Principia's own downsampling assumes
+// (within Ephemeris.DownsamplingTolerance of the path).
+internal static class Hermite
 {
-    public string Describe() => Kind switch
+    // At fraction u of the interval h (s) from (q0, v0) to (q1, v1).
+    public static double3 Position(double3 q0, double3 v0, double3 q1, double3 v1, double h, double u)
     {
-        PlotFrame.BodyCentred => $"centred on {Centre.Id}",
-        PlotFrame.BodySurface => $"surface of {Centre.Id}",
-        _ => $"rotating with {Centre.Id}–{Secondary?.Id}",
-    };
+        double u2 = u * u, u3 = u2 * u;
+        return q0 * (2 * u3 - 3 * u2 + 1) + v0 * ((u3 - 2 * u2 + u) * h) + q1 * (-2 * u3 + 3 * u2) +
+               v1 * ((u3 - u2) * h);
+    }
+
+    public static double3 Velocity(double3 q0, double3 v0, double3 q1, double3 v1, double h, double u)
+    {
+        double u2 = u * u;
+        return q0 * ((6 * u2 - 6 * u) / h) + v0 * (3 * u2 - 4 * u + 1) + q1 * ((6 * u - 6 * u2) / h) +
+               v1 * (3 * u2 - 2 * u);
+    }
+
+    // The state at t between samples i - 1 and i.
+    public static QP Between(IReadOnlyList<double> times, IReadOnlyList<QP> states, int i, double t)
+    {
+        double h = times[i] - times[i - 1], u = (t - times[i - 1]) / h;
+        double3 q0 = states[i - 1].Q.ToDouble3(), q1 = states[i].Q.ToDouble3();
+        double3 v0 = states[i - 1].P.ToDouble3(), v1 = states[i].P.ToDouble3();
+        return new QP(Position(q0, v0, q1, v1, h, u), Velocity(q0, v0, q1, v1, h, u));
+    }
+
+    // The state at t, within the samples.
+    public static QP At(double[] times, QP[] states, double t)
+    {
+        int i = Array.BinarySearch(times, t);
+        return i >= 0 ? states[i] : Between(times, states, Math.Clamp(~i, 1, times.Length - 1), t);
+    }
 }

@@ -1,9 +1,8 @@
-using System.Reflection.Emit;
 using Brutal.Numerics;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
 
 // KSA's ground track window (F3) samples the vessel's patched conics. While
 // Principia drives, it samples the vessel's n-body path instead: the flight
@@ -41,9 +40,9 @@ internal static class GroundTrack
         {
             return null;
         }
-        Prediction? line = Predictor.LatestPlan is { } plan && plan.Vehicle == vehicle && plan.StateTimes.Length > 1
-            ? plan
-            : Predictor.Latest is { } coast && coast.Vehicle == vehicle && coast.StateTimes.Length > 1 ? coast : null;
+        Prediction? line = Predictor.PlanFor(vehicle) is { StateTimes.Length: > 1 } plan ? plan
+                         : Predictor.PredictionFor(vehicle) is { StateTimes.Length: > 1 } coast ? coast
+                         : null;
         if (line == null || !system.Enter())
         {
             return null;
@@ -51,7 +50,7 @@ internal static class GroundTrack
         try
         {
             double t = Math.Clamp(GameTime.ToSecondsSinceJ2000(time), line.StateTimes[0], line.StateTimes[^1]);
-            QP vessel = Interpolate(line.StateTimes, line.States, t);
+            QP vessel = Hermite.At(line.StateTimes, line.States, t);
             QP centre = system.Ephemeris.State(index, t);
             return (vessel.Q.ToDouble3() - centre.Q.ToDouble3(), vessel.P.ToDouble3() - centre.P.ToDouble3());
         }
@@ -59,30 +58,6 @@ internal static class GroundTrack
         {
             system.Exit();
         }
-    }
-
-    // Cubic Hermite between the integrated samples, and its derivative.
-    private static QP Interpolate(double[] times, QP[] states, double t)
-    {
-        int i = Array.BinarySearch(times, t);
-        if (i >= 0)
-        {
-            return states[i];
-        }
-        return Interpolate(times, states, Math.Clamp(~i, 1, times.Length - 1), t);
-    }
-
-    // Between samples i - 1 and i.
-    internal static QP Interpolate(IReadOnlyList<double> times, IReadOnlyList<QP> states, int i, double t)
-    {
-        double h = times[i] - times[i - 1], u = (t - times[i - 1]) / h, u2 = u * u, u3 = u2 * u;
-        double3 q0 = states[i - 1].Q.ToDouble3(), q1 = states[i].Q.ToDouble3();
-        double3 v0 = states[i - 1].P.ToDouble3(), v1 = states[i].P.ToDouble3();
-        double3 q = q0 * (2 * u3 - 3 * u2 + 1) + v0 * ((u3 - 2 * u2 + u) * h) + q1 * (-2 * u3 + 3 * u2) +
-                    v1 * ((u3 - u2) * h);
-        double3 v = q0 * ((6 * u2 - 6 * u) / h) + v0 * (3 * u2 - 4 * u + 1) + q1 * ((6 * u - 6 * u2) / h) +
-                    v1 * (3 * u2 - 2 * u);
-        return new QP(q, v);
     }
 }
 
@@ -92,23 +67,9 @@ internal static class GroundTrackPatch
     [HarmonyTranspiler]
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        var conic = AccessTools.Method(typeof(PatchedConic), nameof(PatchedConic.GetStateVectorsAt),
-                                       [typeof(UniverseTime)]);
-        int replaced = 0;
-        foreach (CodeInstruction instruction in instructions)
-        {
-            if (instruction.Calls(conic))
-            {
-                instruction.opcode = OpCodes.Call;
-                instruction.operand = AccessTools.Method(typeof(GroundTrack), nameof(GroundTrack.StateVectorsAt));
-                replaced++;
-            }
-            yield return instruction;
-        }
-        if (replaced == 0)
-        {
-            Log.Warn("[ground track] GroundTrackWindow.DrawGroundTrack no longer reads the conics; " +
-                     "it shows KSA's track");
-        }
+        return Patching.ReplaceCalls(instructions, "[ground track] GroundTrackWindow.DrawGroundTrack no longer reads " +
+                                     "the conics; it shows KSA's track",
+            (AccessTools.Method(typeof(PatchedConic), nameof(PatchedConic.GetStateVectorsAt), [typeof(UniverseTime)]),
+             AccessTools.Method(typeof(GroundTrack), nameof(GroundTrack.StateVectorsAt))));
     }
 }

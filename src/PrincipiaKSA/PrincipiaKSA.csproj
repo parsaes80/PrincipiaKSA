@@ -21,7 +21,7 @@
   <PropertyGroup>
     <KsaDir Condition="'$(KsaDir)' == ''">$(KSA_DIR)</KsaDir>
     <KsaDir Condition="'$(KsaDir)' == ''">$(HOME)/Games/Ahwoo/Kitten Space Agency</KsaDir>
-    <StarMapDir Condition="'$(StarMapDir)' == ''">$(HOME)/.local/share/Borea/Loaders/StarMap/0.4.8</StarMapDir>
+    <StarMapDir Condition="'$(StarMapDir)' == ''">$(HOME)/.local/share/Borea/Loaders/StarMap/0.5.4</StarMapDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -37,7 +37,8 @@
     <!-- KeyHash (vehicle ids) lives here. -->
     <Reference Include="Planet.Render.Core" HintPath="$(KsaDir)/Planet.Render.Core.dll" Private="false" />
     <Reference Include="StarMap.API" HintPath="$(StarMapDir)/StarMap.API.dll" Private="false" />
-    <!-- Must match the 0Harmony.dll that StarMap ships (2.4.2 in StarMap 0.4.8). -->
+    <!-- Harmony's API, to compile against; StarMap ships its own 0Harmony.dll
+         (2.4.3 in StarMap 0.5.4), which the mod runs with. -->
     <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
   </ItemGroup>
 

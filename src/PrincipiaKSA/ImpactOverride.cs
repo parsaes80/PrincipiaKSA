@@ -3,7 +3,7 @@ using System.Reflection;
 using HarmonyLib;
 using KSA;
 
-namespace PrincipiaKSA.Patches;
+namespace PrincipiaKSA;
 
 // KSA's flight plan, and with it every burn, ends where a patched conic hits
 // its primary body. On a close pass, KSA's conic can crash where the n-body
@@ -34,12 +34,12 @@ internal static class ImpactOverride
         double need = t + Margin;
         bool Past(double[]? times) => times is { Length: > 1 } && times[0] <= t && times[^1] >= need;
 
-        Prediction? line = burnPatch ? Predictor.LatestPlan : Predictor.Latest;
-        if (line != null && line.Vehicle == vehicle && Past(line.Times))
+        Prediction? line = burnPatch ? Predictor.PlanFor(vehicle) : Predictor.PredictionFor(vehicle);
+        if (line != null && Past(line.Times))
         {
             return true;
         }
-        if (Predictor.LatestNodes is { } nodes && nodes.Vehicle == vehicle)
+        if (Predictor.NodesFor(vehicle) is { } nodes)
         {
             foreach (NodeTrack track in nodes.ByBurn.Values)
             {
@@ -61,7 +61,7 @@ internal static class ImpactOverride
             return;
         }
         _nextLog = now + 10 * Stopwatch.Frequency;
-        double ahead = (t - GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime())) / 3600;
+        double ahead = (t - GameTime.Now) / 3600;
         Log.Info($"[impact] KSA's conics put the vessel into {(patch.PrimaryBody as IObjectId)?.Id} in {ahead:F1} h; " +
                  "Principia's path flies on, so KSA's plan carries on past it");
     }
