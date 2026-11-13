@@ -48,7 +48,7 @@ The same package runs on Linux and Windows (x64).
 
 | Path | What |
 |---|---|
-| `src/PrincipiaKSA/` | C# mod, one file per feature, each with the Harmony patches it needs: StarMap entry point, the game loop, drivers for bodies and vessels, predictor, plotting frames, maneuver nodes and burns, map overlay and window |
+| `src/PrincipiaKSA/` | C# mod, each with the Harmony patches it needs: StarMap entry point, the game loop, drivers for bodies and vessels, predictor, plotting frames, maneuver nodes and burns, map overlay and window |
 | `native/` | The C API (`principia_ksa.h`) over Principia's C++ core, its smoke test (`test/`), and `tools/sol_reference.cpp` (the JPL check above) |
 | `extern/` | Principia and the dependencies it needs (abseil, protobuf, re2, gipfeli, CORE-MATH, zfp, Boost's config and multiprecision), as git submodules pinned to the commits this mod is built and tested with |
 | `build.zig` | The whole build, with Zig alone: Principia, its dependencies, protoc, the native library for Linux and Windows, the C# mod, the package |
@@ -102,7 +102,7 @@ holds Principia's and those of the libraries in the native library (abseil,
 protobuf, re2, gipfeli, zfp, Boost, CORE-MATH, LLVM's libc++ and, for
 Windows, the MinGW-w64 runtime).
 
-## Not Tested Yet
+## Limitations
 
 Keep in mind this is an early project in development, and has not been thoroughly tested.
 
@@ -111,9 +111,7 @@ Keep in mind this is an early project in development, and has not been thoroughl
   with the n-body correction.
 - In a rotating plotting frame (two-body rotating, body surface), a node's
   arrows are about its body in fixed axes, not along the rotating line.
-- After an encounter KSA's conics get wrong, the hover marker's colour and
-  readouts, and the right-click menu's circularize and plane-match Δv, are
-  still KSA's.
+- circulize and transfer planner are very accurate because they still use Kepler physics.
 - Each update recomputes the prediction, the flight plan and the nodes'
   tracks from the vessel's state, also where they share their path.
 - A rare error in preparing a burn for the flight plan ("divide by zero") is
