@@ -197,6 +197,7 @@ internal static class FlightPlanHoverPatch
     private static bool Prefix(Vehicle vehicle, IViewport inViewPort, Camera camera, float2 mousePosScreen,
                                float grabRadiusPercent, ref OrbitHoverCandidate? selected)
     {
+        using var profiled = FrameProfiler.LineHover.Measure();
         try
         {
             if (!KsaConics.Hidden(vehicle))
@@ -242,6 +243,7 @@ internal static class BurnHoverPatch
     private static bool Prefix(BurnPlan __instance, Vehicle owner, IViewport inViewPort, Camera camera,
                                float2 mousePos, bool hoversMarker, ref OrbitHoverCandidate? selected)
     {
+        using var profiled = FrameProfiler.NodeHover.Measure();
         try
         {
             if (!KsaConics.Hidden(owner))
@@ -322,6 +324,7 @@ internal static class BurnMenuSnapPatch
     [HarmonyPostfix]
     private static void Postfix(in CelestialPosition point, IViewport viewport)
     {
+        using var profiled = FrameProfiler.BurnMenuSnap.Measure();
         try
         {
             if (point.Patch is not { } patch || !KsaConics.Hidden(Program.ControlledVehicle))
@@ -392,6 +395,7 @@ internal static class CrossingTimePatch
     [HarmonyPrefix]
     private static bool Prefix(ref CelestialPosition __instance, ref UniverseTime gameTime, ref bool __result)
     {
+        using var profiled = FrameProfiler.NodeTime.Measure();
         try
         {
             if (OrbitHover.TryExact(in __instance, out UniverseTime exact))

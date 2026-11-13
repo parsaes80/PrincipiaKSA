@@ -13,6 +13,7 @@ internal static class ApplySingleFreefallMotionPatch
     [HarmonyPrefix]
     private static void Prefix(UniverseTime nextTime, VehicleUpdateState vehicleState)
     {
+        using var profiled = FrameProfiler.VesselStep.Measure();
         try
         {
             VesselDriver.BeforeFreefall(vehicleState, nextTime);
@@ -53,6 +54,7 @@ internal static class RunUnconstrainedVehicleStepPatch
     [HarmonyPrefix]
     private static void Prefix(PhysicsBubble __instance, object[] __args)
     {
+        using var profiled = FrameProfiler.VesselStep.Measure();
         try
         {
             SimStep subStep = SubStep(__args[0]);
@@ -90,6 +92,7 @@ internal static class ComputeDerivativesPatch
                                 double3 positionOriginBub,
                                 ref Disturbances __result)
     {
+        using var profiled = FrameProfiler.ThrustGravity.Measure();
         try
         {
             if (props.Situation.HasAnyContact() || environment.ClosestParent != origin.Parent)

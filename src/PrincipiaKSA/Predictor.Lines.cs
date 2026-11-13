@@ -14,17 +14,31 @@ internal static partial class Predictor
         FrameSpec frame = r.Frame;
         double radius = frame.Centre.MeanRadius;
         // End the line where it meets the centre body's surface.
-        bool impact = Impact.Truncate(ephemeris, frame, trajectory);
+        bool impact;
+        using (PredictionTiming.Stage("impact search"))
+        {
+            impact = Impact.Truncate(ephemeris, frame, trajectory);
+        }
         int n = trajectory.Times.Count;
         var relative = new QP[n];
-        for (int i = 0; i < n; i++)
+        using (PredictionTiming.Stage("states about the centre body"))
         {
-            QP centre = ephemeris.State(frame.CentreIndex, trajectory.Times[i]);
-            relative[i] = new QP(trajectory.States[i].Q.ToDouble3() - centre.Q.ToDouble3(),
-                                 trajectory.States[i].P.ToDouble3() - centre.P.ToDouble3());
+            for (int i = 0; i < n; i++)
+            {
+                QP centre = ephemeris.State(frame.CentreIndex, trajectory.Times[i]);
+                relative[i] = new QP(trajectory.States[i].Q.ToDouble3() - centre.Q.ToDouble3(),
+                                     trajectory.States[i].P.ToDouble3() - centre.P.ToDouble3());
+            }
         }
-        (Line line, int[] denseIndex, List<Crossing> crossings) =
-            Draw(system, frame, trajectory.Times, trajectory.States, n, ghosts: true);
+        Line line;
+        int[] denseIndex;
+        List<Crossing> crossings;
+        using (PredictionTiming.Stage("line: frames and spheres of influence"))
+        {
+            (line, denseIndex, crossings) =
+                Draw(system, frame, trajectory.Times, trajectory.States, n, ghosts: true);
+        }
+        var markersTiming = PredictionTiming.Stage("markers");
         var markers = new List<Prediction.Marker>();
         double endTime = n > 0 ? trajectory.Times[n - 1] : r.Time;
         // A point in the frame of stretch s (by default the one at time t).
@@ -139,6 +153,12 @@ internal static partial class Predictor
             }
         }
         markers.Sort((x, y) => x.Time.CompareTo(y.Time));
+        markersTiming.Dispose();
+        (double, double3)[][] danger;
+        using (PredictionTiming.Stage("danger ground track"))
+        {
+            danger = Danger(frame, trajectory.Times, relative);
+        }
 
         int Dense(int i) => denseIndex[Math.Clamp(i, 0, Math.Max(n - 1, 0))];
         return new Prediction
@@ -153,13 +173,14 @@ internal static partial class Predictor
                                  .Select(a => (Dense(a.Item1), Dense(Math.Min(a.Item2, n - 1)))).ToArray(),
             FirstIgnition = n > 0 ? Dense(Math.Min(firstIgnition, n - 1)) : 0,
             End = trajectory.End,
+            AwaitingPlanets = trajectory.AwaitingPlanets,
             Steps = trajectory.Steps,
             Impact = impact,
             Markers = markers,
             ComputeMs = sw.Elapsed.TotalMilliseconds,
             Note = note,
             ParentApsides = new ParentApsides(r.Parent, Apsides(0), Apsides(1)),
-            Danger = Danger(frame, trajectory.Times, relative),
+            Danger = danger,
             StateTimes = trajectory.Times.ToArray(),
             States = trajectory.States.ToArray(),
         };
@@ -233,10 +254,13 @@ internal static partial class Predictor
     // (Stretch: about the body met for an encounter, as KSA draws its
     // encounter patches, else the plotting frame), densified; with `ghosts`,
     // an encounter also dimmer in the plotting frame. Also each sample's
-    // index among the points.
+    // index among the points. A path that continues another partway (a node's
+    // track) gives `start`, the sphere the other is in there and whether it
+    // entered it by an encounter (SphereAt), so that its first stretch is
+    // drawn in the same frame as there.
     private static (Line Line, int[] Index, List<Crossing> Crossings) Draw(
         PrincipiaSystem system, FrameSpec plot, IReadOnlyList<double> times, IReadOnlyList<QP> states, int n,
-        bool ghosts = false)
+        bool ghosts = false, (int Body, bool Encounter)? start = null)
     {
         Ephemeris ephemeris = system.Ephemeris;
         Spheres spheres = Spheres.Of(system);
@@ -259,8 +283,9 @@ internal static partial class Predictor
         var pieceSamples = new List<int>();
         int pieceBody = n > 0 ? body[0] : plot.CentreIndex;
         // Whether the stretch being built began with an encounter: from a
-        // body's sphere into one of its moons' (or planets').
-        bool pieceEncounter = false;
+        // body's sphere into one of its moons' (or planets'). For the first,
+        // as the path it continues has it.
+        bool pieceEncounter = start is { } s && s.Body == pieceBody && s.Encounter;
 
         void Add(double t, QP state, int sample)
         {
@@ -353,6 +378,27 @@ internal static partial class Predictor
         }
         Close(closed: false);
         return (new Line(pointTimes.ToArray(), points.ToArray(), stretches.ToArray()), index, crossings);
+    }
+
+    // The sphere a path is in at sample `k`, and whether it entered it by an
+    // encounter, as Draw finds them drawing the whole path.
+    private static (int Body, bool Encounter) SphereAt(PrincipiaSystem system, FrameSpec plot,
+                                                       IReadOnlyList<double> times, IReadOnlyList<QP> states, int k)
+    {
+        Ephemeris ephemeris = system.Ephemeris;
+        Spheres spheres = Spheres.Of(system);
+        int body = plot.CentreIndex;
+        bool encounter = false;
+        for (int i = 0; i <= k && i < times.Count; i++)
+        {
+            int b = spheres.Of(ephemeris, body, states[i].Q.ToDouble3(), times[i]);
+            if (i > 0 && b != body)
+            {
+                encounter = spheres.IsChild(b, body);
+            }
+            body = b;
+        }
+        return (body, encounter);
     }
 
     private static (double[] Times, double3[] Positions, int[] Index) Densify(

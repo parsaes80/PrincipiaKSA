@@ -22,11 +22,19 @@ internal static class GetJobSimStepPatch
         {
             double next = GameTime.ToSecondsSinceJ2000(__result.NextTime);
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
-            system.Prolonger.EnsureProlonged(next);
+            using (FrameProfiler.ProlongToNextStep.Measure())
+            {
+                system.Prolonger.EnsureProlonged(next);
+            }
             LastProlongTicks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
             double simSecondsPerRealSecond = __result.DeltaTime / Math.Max(dtPlayer, 1e-3);
-            system.Prolonger.Request(next + Math.Max(3600, 3 * simSecondsPerRealSecond));
-            BurnTargetRefresher.Tick();
+            // A few real seconds ahead at this warp, and the planets kept
+            // integrated well ahead for the lines (Prolonger.Horizon).
+            system.Prolonger.Request(next + Math.Max(Prolonger.Horizon, 3 * simSecondsPerRealSecond));
+            using (FrameProfiler.BurnTargets.Measure())
+            {
+                BurnTargetRefresher.Tick();
+            }
         }
         catch (Exception e)
         {
@@ -45,13 +53,25 @@ internal static class ApplyOrbitSolversPatch
         try
         {
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
-            CelestialDriver.RefreshOrbits();
+            using (FrameProfiler.PlanetConics.Measure())
+            {
+                CelestialDriver.RefreshOrbits();
+            }
             Diagnostics.RecordFrame(GetJobSimStepPatch.LastProlongTicks,
                                     System.Diagnostics.Stopwatch.GetTimestamp() - start);
-            Multiplayer.Tick();
-            Diagnostics.Tick();
-            Predictor.Tick();
-            SettingsStore.Tick();
+            using (FrameProfiler.StatusAndSettings.Measure())
+            {
+                Multiplayer.Tick();
+                Diagnostics.Tick();
+            }
+            using (FrameProfiler.Snapshot.Measure())
+            {
+                Predictor.Tick();
+            }
+            using (FrameProfiler.StatusAndSettings.Measure())
+            {
+                SettingsStore.Tick();
+            }
         }
         catch (Exception e)
         {

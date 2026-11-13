@@ -39,8 +39,8 @@ internal static class BurnNode
             Covers(coast, t))
         {
             return new NodePath(coast.Line, coast.Times[0],
-                                window ? Predictor.NodeWindow(burn.Patch.Orbit) : double.NaN, coast.StateTimes,
-                                coast.States);
+                                window ? Predictor.NodeWindow(burn.Patch.Orbit, t - coast.Times[0]) : double.NaN,
+                                coast.StateTimes, coast.States);
         }
         return null;
     }
@@ -77,15 +77,27 @@ internal static class BurnNode
     private static bool Covers(Prediction? line, double t) =>
         line is { Times.Length: > 1 } && t >= line.Times[0] && t <= line.Times[^1];
 
-    private static double3? Ecl(Burn burn)
+    // Where a node is drawn from, for the log (NodeDiagnostics).
+    public enum Source { Track, Prediction, FlightPlan, LastDrawn, KsaConic }
+
+    private static (double3 Ecl, Source Source)? Ecl(Burn burn)
     {
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
         if (Path(burn) is { } path)
         {
-            return path.Line.EclAt(t);
+            bool track = Predictor.LatestNodes is { } nodes && nodes.ByBurn.ContainsKey(burn);
+            return (path.Line.EclAt(t), track ? Source.Track : Source.Prediction);
         }
-        return DrawnLine(burn) is { } line ? line.Line.EclAt(t) : null;
+        return DrawnLine(burn) is { } line
+            ? (line.Line.EclAt(t), line.IsFlightPlan ? Source.FlightPlan : Source.Prediction)
+            : null;
     }
+
+    // Where each node was placed last, and from what.
+    public static readonly ConditionalWeakTable<Burn, StrongBox<Source>> LastSource = new();
+
+    private static void Placed(Burn burn, Source source) =>
+        LastSource.AddOrUpdate(burn, new StrongBox<Source>(source));
 
     // The times at which KSA can hold this burn: it must lie on a patch of the
     // vessel's plan (first burn) or of the previous burn's still ahead, or KSA
@@ -131,16 +143,19 @@ internal static class BurnNode
             // A departure's node is on its parent's orbit, where KSA puts it.
             if (!burn.ParentDepartureBurn && burn.Vehicle is { } vehicle && KsaConics.Hidden(vehicle))
             {
-                if (Ecl(burn) is { } ecl)
+                if (Ecl(burn) is var (ecl, source))
                 {
                     double3 cce = ecl - burn.Patch.Orbit.Parent.GetPositionEclFromCce(double3.Zero);
                     Drawn.AddOrUpdate(burn, new StrongBox<(UniverseTime, double3)>((burn.Time, cce)));
+                    Placed(burn, source);
                     return cce;
                 }
                 if (Drawn.TryGetValue(burn, out var last) && last.Value.Time == burn.Time)
                 {
+                    Placed(burn, Source.LastDrawn);
                     return last.Value.Cce;
                 }
+                Placed(burn, Source.KsaConic);
             }
         }
         catch (Exception e)
@@ -195,10 +210,26 @@ internal static class BurnGizmoDragPatch
     // crossing's precision (1 ms).
     private const double CrossingMargin = 0.01;
 
+    // The tightest of `bounds` by `pick` (Math.Max for a lower bound), and its name.
+    private static (double Value, string Why) Bound(Func<double, double, double> pick,
+                                                   params (double Value, string Why)[] bounds)
+    {
+        (double value, string why) = bounds[0];
+        foreach (var (v, w) in bounds.Skip(1))
+        {
+            if (pick(v, value) != value && !double.IsNaN(v))
+            {
+                (value, why) = (v, w);
+            }
+        }
+        return (value, why);
+    }
+
     [HarmonyPrefix]
     private static bool Prefix(Burn __instance, FlightComputer flightComputer, IViewport inViewPort,
                                ref bool __result)
     {
+        using var profiled = FrameProfiler.NodeDrag.Measure();
         try
         {
             Burn burn = __instance;
@@ -209,6 +240,7 @@ internal static class BurnGizmoDragPatch
             __result = false;
             if (BurnNode.Path(burn) is not { } path)
             {
+                NodeDiagnostics.Drag(burn, "held: no path for it yet (its track is being computed)");
                 return false;  // Its track is on its way: hold still.
             }
             Camera camera = inViewPort.GetCamera();
@@ -227,10 +259,17 @@ internal static class BurnGizmoDragPatch
             Stretch stretch = line.Stretches[s];
             double first = s > 0 ? stretch.From + CrossingMargin : stretch.From;
             double last = stretch.Closed ? stretch.To - CrossingMargin : stretch.To;
-            double lo = Math.Max(Math.Max(Math.Max(now, path.Start), Math.Max(t - reach, coverStart)), first);
-            double hi = Math.Min(Math.Min(Math.Min(line.Times[^1], t + reach), coverEnd - 1e-3), last);
+            // The bounds, each named for the log.
+            (double lo, string loWhy) = Bound(Math.Max, (now, "now"), (path.Start, "the start of its path"),
+                                              (t - reach, "its drag window"), (coverStart, "the start of KSA's plan"),
+                                              (first, "its sphere of influence"));
+            (double hi, string hiWhy) = Bound(Math.Min, (line.Times[^1], "the end of its track"),
+                                              (t + reach, "its drag window"),
+                                              (coverEnd - 1e-3, "an impact in KSA's plan"),
+                                              (last, "its sphere of influence"));
             if (!(hi > lo))
             {
+                NodeDiagnostics.Drag(burn, $"held: no room between {loWhy} and {hiWhy}", path);
                 return false;
             }
             FrameMapper[] mappers = line.Mappers();
@@ -240,14 +279,22 @@ internal static class BurnGizmoDragPatch
                                ref grab, ref hit);
             if (hit is not { } h)
             {
+                NodeDiagnostics.Drag(burn, "held: no point of its path found near the cursor", path);
                 return false;
             }
             // Only toward the cursor, as KSA.
             float2 node = camera.EclToScreen(line.EclAt(mappers, t));
+            const double atBound = 1;  // s
             if (!(float2.Distance(camera.EclToScreen(h.Ecl), mouse) < float2.Distance(node, mouse)))
             {
+                NodeDiagnostics.Drag(burn, t - lo < atBound ? $"held at {loWhy}"
+                                         : hi - t < atBound ? $"held at {hiWhy}"
+                                         : "held: already the nearest point to the cursor", path);
                 return false;
             }
+            NodeDiagnostics.Drag(burn, h.Time - lo < atBound ? $"followed, stopped at {loWhy}"
+                                     : hi - h.Time < atBound ? $"followed, stopped at {hiWhy}"
+                                     : "followed", path);
             burn.Time = GameTime.FromSecondsSinceJ2000(h.Time);
             burn.Update(flightComputer);
             __result = true;

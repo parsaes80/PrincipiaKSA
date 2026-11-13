@@ -80,6 +80,7 @@ internal static class OrbitLines
     [HarmonyPostfix]
     private static void Postfix(IViewport inViewport)
     {
+        using var profiled = FrameProfiler.OrbitLines.Measure();
         try
         {
             if (inViewport.Mode != CameraMode.Map || Program.ControlledVehicle is not { } vehicle)

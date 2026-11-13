@@ -27,7 +27,11 @@ internal static partial class Predictor
                                   int[] ApsisBodies, Astronomical[] Candidates, long CoastSteps,
                                   double CoastTolerance, PlannedBurn[] Burns, EnginePhase[] Phases, double Mass,
                                   long PlanSteps, double PlanTolerance, NodeBurn[] Nodes, bool ShowPlan,
-                                  int ParentIndex, Astronomical Parent);
+                                  int ParentIndex, Astronomical Parent)
+    {
+        // When the vessel's state was taken (Stopwatch ticks).
+        public long Requested { get; } = Stopwatch.GetTimestamp();
+    }
 
     // A maneuver node needing an approach track, reaching Window either side.
     private sealed record NodeBurn(Burn Burn, double Time, double Window);
@@ -37,6 +41,17 @@ internal static partial class Predictor
     // the coasts: at most this many steps per engine phase, at 1 m.
     private const long BurnSteps = 1000;
     private const double BurnTolerance = 1;
+
+    // How far ahead any line may go, steps left or not: the ephemeris it
+    // needs is prolonged that far, which costs memory (twenty years).
+    public const double MaxSpanYears = 20;
+    private const double MaxSpan = MaxSpanYears * 365.25 * 86400;
+
+    // How far past the integrated planets a line may go in one computation,
+    // integrating them itself (~6 ms per day for KSA's 46 bodies), and how far
+    // ahead of where it stopped it asks the background thread to integrate.
+    private const double AheadOfPlanets = 86400;
+    private const double PlanetRequestSeconds = 30 * 86400;
 
     private static readonly long MinInterval = Stopwatch.Frequency / 120;
 
@@ -266,6 +281,11 @@ internal static partial class Predictor
         return text;
     }
 
+    // Not optimized, so that a failure's stack trace names the KSA call that
+    // failed instead of folding it into this method (a rare "divide by zero",
+    // seen with a hyperbolic patch and a Δv near zero).
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
+                                                System.Runtime.CompilerServices.MethodImplOptions.NoOptimization)]
     private static void AddBurn(List<PlannedBurn> burns, Vehicle vehicle, Burn burn, BurnTarget? target, double now)
     {
         {
@@ -321,15 +341,17 @@ internal static partial class Predictor
         }
     }
 
-    // How far a node's approach track reaches either side of it, and so a drag
-    // step: a twentieth of its orbit (10 min to 12 h), an hour if unbound. The
-    // track follows the node as it moves.
-    public static double NodeWindow(Orbit orbit)
+    // How far a node's approach track reaches either side of it, and so how
+    // far one drag step may move it (0.9 of it): half its orbit, so that the
+    // node can go anywhere on the orbit at once; unbound, half the time to it.
+    // From 10 min to 30 days: the track is integrated on every update, and a
+    // drag also stops at the node's sphere of influence. The track follows the
+    // node as it moves.
+    public static double NodeWindow(Orbit orbit, double ahead)
     {
         double period = orbit.Period;
-        return orbit.IsBound() && double.IsFinite(period) && period > 0
-            ? Math.Clamp(period / 20, 600, 12 * 3600.0)
-            : 3600;
+        double half = orbit.IsBound() && double.IsFinite(period) && period > 0 ? period / 2 : ahead / 2;
+        return double.IsFinite(half) ? Math.Clamp(half, 600, 30 * 86400.0) : 3600;
     }
 
     // Every node still ahead, with or without Δv.
@@ -349,7 +371,7 @@ internal static partial class Predictor
             {
                 continue;
             }
-            nodes.Add(new NodeBurn(burn, time, NodeWindow(burn.Patch.Orbit)));
+            nodes.Add(new NodeBurn(burn, time, NodeWindow(burn.Patch.Orbit, time - now)));
         }
         return nodes.ToArray();
     }
@@ -403,6 +425,7 @@ internal static partial class Predictor
     // The prediction's thread.
     private static void RunCoast()
     {
+        FrameProfiler.MarkBackgroundThread();
         Request? done = null;
         while (!_stop)
         {
@@ -416,7 +439,14 @@ internal static partial class Predictor
             done = request;
             try
             {
-                Latest = request.CoastSteps > 0 ? ComputeCoast(system, request) : null;
+                long started = Stopwatch.GetTimestamp();
+                PredictionTiming.Begin();
+                using (FrameProfiler.Prediction.Measure())
+                {
+                    Latest = request.CoastSteps > 0 ? ComputeCoast(system, request) : null;
+                }
+                PredictionTiming.End("prediction", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                                     Stopwatch.GetElapsedTime(request.Requested, started).TotalMilliseconds, Latest);
                 _coastError = null;
             }
             catch (Exception e)
@@ -434,6 +464,7 @@ internal static partial class Predictor
     // The flight plan's thread, and the nodes' tracks with it.
     private static void RunPlan()
     {
+        FrameProfiler.MarkBackgroundThread();
         Request? done = null;
         while (!_stop)
         {
@@ -448,9 +479,17 @@ internal static partial class Predictor
             try
             {
                 NodeTracks? nodes = null;
-                Prediction? plan = request.Burns.Length > 0 || request.Nodes.Length > 0
-                    ? ComputePlan(system, request, out nodes)
-                    : null;
+                Prediction? plan;
+                long started = Stopwatch.GetTimestamp();
+                PredictionTiming.Begin();
+                using (FrameProfiler.FlightPlan.Measure())
+                {
+                    plan = request.Burns.Length > 0 || request.Nodes.Length > 0
+                        ? ComputePlan(system, request, out nodes)
+                        : null;
+                }
+                PredictionTiming.End("flight plan", Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                                     Stopwatch.GetElapsedTime(request.Requested, started).TotalMilliseconds, plan);
                 LatestPlan = request.ShowPlan ? plan : null;
                 LatestNodes = nodes;
                 _planError = null;
@@ -477,6 +516,9 @@ internal static partial class Predictor
         public readonly List<Apsis> Apsides = new();
         public readonly List<(double Time, QP State, string Label)> Burns = new();
         public PredictionEnd End = PredictionEnd.ReachedEnd;
+        // Stopped, steps left, where the planets are integrated so far: the
+        // next computation goes further (AheadOfPlanets).
+        public bool AwaitingPlanets;
         public long Steps;  // Integrator steps taken, in all.
         public QP Last;
         public double LastTime;
@@ -490,15 +532,33 @@ internal static partial class Predictor
         public long Extend(Ephemeris ephemeris, double t, long maxSteps, double tolerance, int[] apsisBodies,
                            double3 direction = default, double thrust = 0, double mass = 0, double massFlow = 0)
         {
+            AwaitingPlanets = false;
             if (!(t > LastTime))
             {
                 End = PredictionEnd.ReachedEnd;
                 return 0;
             }
-            Ephemeris.PredictionResult p = ephemeris.Predict(Last, LastTime, t, maxSteps, tolerance, direction,
+            // No further than the planets are integrated, and a little more:
+            // integrating them takes ~6 ms per day, far longer than the vessel.
+            // The background thread is asked to go on, so the line grows over
+            // the next computations instead of waiting for all of it now.
+            double until = Math.Min(t, ephemeris.TimeRange.TMax + AheadOfPlanets);
+            if (!(until > LastTime))
+            {
+                End = PredictionEnd.ReachedEnd;
+                AwaitingPlanets = true;
+                PrincipiaSystem.Current?.Prolonger.Request(LastTime + PlanetRequestSeconds);
+                return 0;
+            }
+            Ephemeris.PredictionResult p = ephemeris.Predict(Last, LastTime, until, maxSteps, tolerance, direction,
                                                              thrust, mass, massFlow,
                                                              CollectApsides ? apsisBodies : []);
             End = p.End;
+            AwaitingPlanets = p.End == PredictionEnd.ReachedEnd && until < t;
+            if (AwaitingPlanets)
+            {
+                PrincipiaSystem.Current?.Prolonger.Request(until + PlanetRequestSeconds);
+            }
             Steps += p.Steps;
             for (int i = Times.Count == 0 ? 0 : 1; i < p.Times.Length; i++)
             {
@@ -511,7 +571,7 @@ internal static partial class Predictor
             return p.Steps;
         }
 
-        public bool Reached => End == PredictionEnd.ReachedEnd;
+        public bool Reached => End == PredictionEnd.ReachedEnd && !AwaitingPlanets;
     }
 
     // The prediction: the vessel coasting until its steps run out.
@@ -519,8 +579,7 @@ internal static partial class Predictor
     {
         var sw = Stopwatch.StartNew();
         var trajectory = new Trajectory(r.State, r.Time);
-        trajectory.Extend(system.Ephemeris, double.PositiveInfinity, r.CoastSteps, r.CoastTolerance,
-                          r.ApsisBodies);
+        trajectory.Extend(system.Ephemeris, r.Time + MaxSpan, r.CoastSteps, r.CoastTolerance, r.ApsisBodies);
         return Finish(system, r, trajectory, isFlightPlan: false, firstIgnition: 0, note: null, sw);
     }
 }

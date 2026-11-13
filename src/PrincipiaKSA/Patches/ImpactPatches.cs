@@ -116,6 +116,7 @@ internal static class SearchForParentCollisionPatch
                                 (UniverseTime End, TrueAnomaly EndAnomaly, PatchTransition Transition,
                                  UniverseTime Frontier) __state)
     {
+        using var profiled = FrameProfiler.ImpactOverride.Measure();
         try
         {
             bool burnPatch = ImpactOverride.BurnPatch;

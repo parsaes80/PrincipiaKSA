@@ -18,11 +18,13 @@ internal static class MapOverlay
     [HarmonyPostfix]
     private static void Postfix(IGameViewport inViewport)
     {
+        using var profiled = FrameProfiler.MapOverlay.Measure();
         // Once per frame (StarMap's [StarMapAfterGui] isn't called).
         if (inViewport == Program.MainViewport)
         {
             try
             {
+                using var window = FrameProfiler.Window.Measure();
                 SettingsWindow.Draw();
             }
             catch (Exception e)

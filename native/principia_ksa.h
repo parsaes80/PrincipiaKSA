@@ -248,6 +248,22 @@ PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__Predict(
 // Releases an array returned by principia_ksa__Predict.
 PRINCIPIA_KSA_API void principia_ksa__Free(void* array);
 
+// Where the calling thread's last principia_ksa__Predict spent its time (ms),
+// for finding slow predictions.
+typedef struct principia_ksa_PredictTimings {
+  double total;
+  double prolong;          // Integrating the planets ahead of the vessel...
+  double give_way;         // ...of which waiting for the game's own calls.
+  int64_t prolong_pieces;  // Pieces of six hours integrated.
+  double flow;             // Integrating the vessel.
+  double apsides;          // Finding apsides.
+  double thinning;         // Downsampling the points kept.
+  int64_t chunks;          // Chunks of the flow (a month or 50,000 steps).
+} principia_ksa_PredictTimings;
+
+PRINCIPIA_KSA_API void principia_ksa__LastPredictTimings(
+    principia_ksa_PredictTimings* timings);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

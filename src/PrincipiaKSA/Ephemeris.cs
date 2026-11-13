@@ -81,12 +81,17 @@ internal sealed class Ephemeris : IDisposable
         }
     }
 
-    public void Prolong(double t) => Native.Check(Native.EphemerisProlong(Handle, t));
+    public void Prolong(double t)
+    {
+        using var profiled = FrameProfiler.NativeProlong.Measure();
+        Native.Check(Native.EphemerisProlong(Handle, t));
+    }
 
     public (double TMin, double TMax) TimeRange
     {
         get
         {
+            using var profiled = FrameProfiler.NativeTimeRange.Measure();
             Native.Check(Native.EphemerisTimeRange(Handle, out double tMin, out double tMax));
             return (tMin, tMax);
         }
@@ -94,6 +99,7 @@ internal sealed class Ephemeris : IDisposable
 
     public QP State(int index, double t)
     {
+        using var profiled = FrameProfiler.NativeState.Measure();
         Native.Check(Native.EphemerisBodyState(Handle, index, t, out QP state));
         return state;
     }
@@ -102,6 +108,7 @@ internal sealed class Ephemeris : IDisposable
     // body: its own field, geopotential included, plus the other bodies' tides.
     public XYZ RelativeAcceleration(int index, XYZ relativePosition, double t)
     {
+        using var profiled = FrameProfiler.NativeAcceleration.Measure();
         Native.Check(Native.EphemerisRelativeAcceleration(Handle, index, relativePosition, t, out XYZ a));
         return a;
     }
@@ -109,6 +116,7 @@ internal sealed class Ephemeris : IDisposable
     // Integrates a massless body (a vessel) from t0 to t1.
     public QP FlowMassless(in QP initial, double t0, double t1)
     {
+        using var profiled = FrameProfiler.NativeFlow.Measure();
         Native.Check(Native.FlowMassless(Handle, in initial, t0, t1, out QP final));
         return final;
     }
@@ -134,6 +142,7 @@ internal sealed class Ephemeris : IDisposable
                                      double3 direction, double thrust, double initialMass, double massFlow,
                                      ReadOnlySpan<int> apsisBodies)
     {
+        using var profiled = FrameProfiler.NativePredict.Measure();
         fixed (int* bodies = apsisBodies)
         {
             Status status = Native.Predict(Handle, in initial, t0, tEnd, maxSteps, tolerance, tolerance,
@@ -142,6 +151,8 @@ internal sealed class Ephemeris : IDisposable
                                            out double* times, out QP* states, out int count,
                                            out Apsis* apsides, out int apsisCount, out long steps,
                                            out PredictionEnd end);
+            Native.LastPredictTimings(out PredictTimings timings);
+            PredictionTiming.AddNative(timings, apsisBodies.Length);
             try
             {
                 Native.Check(status);

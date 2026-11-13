@@ -58,7 +58,11 @@ internal static partial class Predictor
             pending.Add((burnNumber - 1, segmentStart, trajectory.LastTime));
             if (!trajectory.Reached)
             {
-                if (trajectory.End == PredictionEnd.MaxSteps)
+                if (trajectory.AwaitingPlanets)
+                {
+                    notes.Add($"integrating the planets ahead, up to burn {burnNumber}");
+                }
+                else if (trajectory.End == PredictionEnd.MaxSteps)
                 {
                     notes.Add($"ran out of steps before burn {burnNumber}: raise Steps");
                 }
@@ -106,7 +110,11 @@ internal static partial class Predictor
                 trajectory.Extend(ephemeris, trajectory.LastTime + seconds, BurnSteps, BurnTolerance, r.ApsisBodies,
                                   direction, e.Thrust, mass, e.MassFlow);
                 ok = trajectory.Reached;
-                if (!ok && trajectory.End == PredictionEnd.MaxSteps)
+                if (!ok && trajectory.AwaitingPlanets)
+                {
+                    notes.Add($"integrating the planets ahead, through burn {burnNumber}");
+                }
+                else if (!ok && trajectory.End == PredictionEnd.MaxSteps)
                 {
                     notes.Add($"burn {burnNumber} needs over {BurnSteps:N0} steps: the plan stops there");
                 }
@@ -129,13 +137,12 @@ internal static partial class Predictor
                 break;
             }
         }
-        if (trajectory.End == PredictionEnd.ReachedEnd)
+        if (trajectory.Reached)
         {
             segmentStart = trajectory.Times.Count - 1;
             if (r.Burns.Length > 0)
             {
-                trajectory.Extend(ephemeris, double.PositiveInfinity, r.PlanSteps, r.PlanTolerance,
-                                  r.ApsisBodies);
+                trajectory.Extend(ephemeris, r.Time + MaxSpan, r.PlanSteps, r.PlanTolerance, r.ApsisBodies);
             }
             if (burnNumber == r.Burns.Length)
             {
@@ -149,10 +156,15 @@ internal static partial class Predictor
         {
             foreach (NodeBurn node in segments[segment] ?? [])
             {
-                jobs.Add((node, Task.Run(() => NodeTrackOf(system, r, node, segment, trajectory, startIndex,
-                                                           shared))));
+                jobs.Add((node, Task.Run(() =>
+                {
+                    using var background = new FrameProfiler.BackgroundScope();
+                    using var profiled = FrameProfiler.NodeTrack.Measure();
+                    return NodeTrackOf(system, r, node, segment, trajectory, startIndex, shared);
+                })));
             }
         }
+        var waiting = PredictionTiming.Stage("waiting for node tracks");
         foreach (var (node, job) in jobs)
         {
             try
@@ -167,6 +179,7 @@ internal static partial class Predictor
                 Log.WarnOnce("[predict] a maneuver node's track", e.InnerException ?? e);
             }
         }
+        waiting.Dispose();
         nodes = tracks.Count > 0 ? new NodeTracks(r.Vehicle, r.Frame, tracks, windows) : null;
         return r.Burns.Length > 0
             ? Finish(system, r, trajectory, isFlightPlan: true, Math.Max(firstIgnition, 0),
@@ -185,6 +198,11 @@ internal static partial class Predictor
         Ephemeris ephemeris = system.Ephemeris;
         double start, t0;
         QP s0;
+        // Where the track starts partway along the plan, the sphere the plan
+        // is in there: an encounter stretch is drawn about its body, and the
+        // track's must be too, or the node would be drawn elsewhere (about the
+        // Sun at Saturn's place then, not at Saturn).
+        (int Body, bool Encounter)? sphere = null;
         if (trajectory.Times.Count == 0)
         {
             // Never extended: no burn, so the plan's start.
@@ -203,6 +221,7 @@ internal static partial class Predictor
             }
             t0 = trajectory.Times[k];
             s0 = trajectory.States[k];
+            sphere = SphereAt(system, r.Frame, trajectory.Times, trajectory.States, k);
         }
         double hi = node.Time + node.Window;
         if (!(hi > t0))
@@ -217,7 +236,7 @@ internal static partial class Predictor
         {
             return null;
         }
-        (Line line, _, _) = Draw(system, r.Frame, p.Times, p.States, count);
+        (Line line, _, _) = Draw(system, r.Frame, p.Times, p.States, count, start: sphere);
         return new NodeTrack(start, line.Times, line.Coordinates, line.Stretches, segment, shared, p.Times,
                              p.States);
     }

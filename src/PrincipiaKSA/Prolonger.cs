@@ -7,6 +7,12 @@ internal sealed class Prolonger : IDisposable
     // Work in bounded chunks so that Dispose doesn't wait for a huge prolong.
     private const double ChunkSeconds = 30 * 86400;
 
+    // How far ahead of game time the planets are kept integrated, so that
+    // lines rarely wait for them: for KSA's 46 bodies a year takes ~2 s of
+    // this thread's time and ~30 MB (0.6 MB per body-year). Lines reaching
+    // further ask for more as they go (Predictor.AheadOfPlanets).
+    public const double Horizon = 365.25 * 86400;
+
     private readonly PrincipiaSystem _system;
     private readonly Thread _thread;
     private readonly AutoResetEvent _wake = new(false);
@@ -16,7 +22,12 @@ internal sealed class Prolonger : IDisposable
     public Prolonger(PrincipiaSystem system)
     {
         _system = system;
-        _thread = new Thread(Run) { IsBackground = true, Name = "Principia prolong" };
+        // Below the game's threads: what the game needs next it integrates
+        // itself if this thread is behind (EnsureProlonged).
+        _thread = new Thread(Run)
+        {
+            IsBackground = true, Name = "Principia prolong", Priority = ThreadPriority.BelowNormal,
+        };
         _thread.Start();
     }
 
@@ -47,6 +58,7 @@ internal sealed class Prolonger : IDisposable
 
     private void Run()
     {
+        FrameProfiler.MarkBackgroundThread();
         while (!_stop)
         {
             _wake.WaitOne(250);
@@ -56,7 +68,10 @@ internal sealed class Prolonger : IDisposable
                 double tMax = _system.Ephemeris.TimeRange.TMax;
                 while (!_stop && tMax < target)
                 {
-                    _system.Ephemeris.Prolong(Math.Min(target, tMax + ChunkSeconds));
+                    using (FrameProfiler.ProlongAhead.Measure())
+                    {
+                        _system.Ephemeris.Prolong(Math.Min(target, tMax + ChunkSeconds));
+                    }
                     tMax = _system.Ephemeris.TimeRange.TMax;
                 }
             }

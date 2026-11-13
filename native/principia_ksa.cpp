@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "absl/log/initialize.h"
@@ -287,9 +289,97 @@ struct principia_ksa_Ephemeris {
   std::unique_ptr<Ephemeris<Frame>> ephemeris;
   // Bodies in creation order; owned by `ephemeris`.
   std::vector<not_null<MassiveBody const*>> bodies;
+  // The range in which states can be evaluated (s since J2000), as of the
+  // last prolongation through this API. Principia's own `t_min()` and
+  // `t_max()` take the ephemeris lock, which `Prolong` holds for as long as
+  // it integrates: reading these never waits. `t_max` may lag Principia's,
+  // never lead it.
+  mutable std::atomic<double> t_min{0};
+  mutable std::atomic<double> t_max{0};
+  // Calls from the game's own work (a vessel's step, its thrust gravity)
+  // using the ephemeris now: prolongation lets them go first (Urgent).
+  mutable std::atomic<int> urgent{0};
 };
 
 namespace {
+
+// Publishes the range Principia has reached. Takes the ephemeris lock: call it
+// right after prolonging, on the thread that prolonged.
+void PublishTimeRange(principia_ksa_Ephemeris const* const e) {
+  e->t_min.store(FromInstant(e->ephemeris->t_min()));
+  double const t_max = FromInstant(e->ephemeris->t_max());
+  double seen = e->t_max.load();
+  while (t_max > seen && !e->t_max.compare_exchange_weak(seen, t_max)) {
+  }
+}
+
+// The calling thread's last Predict, timed (principia_ksa__LastPredictTimings).
+thread_local principia_ksa_PredictTimings predict_timings{};
+
+double MsSince(std::chrono::steady_clock::time_point const start) {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - start).count();
+}
+
+// Marks a call the game waits on, for as long as it runs.
+class Urgent {
+ public:
+  explicit Urgent(principia_ksa_Ephemeris const* const e) : e_(e) {
+    if (e_ != nullptr) {
+      e_->urgent.fetch_add(1);
+    }
+  }
+  ~Urgent() {
+    if (e_ != nullptr) {
+      e_->urgent.fetch_sub(1);
+    }
+  }
+  Urgent(Urgent const&) = delete;
+  Urgent& operator=(Urgent const&) = delete;
+
+ private:
+  principia_ksa_Ephemeris const* const e_;
+};
+
+// Prolongs the ephemeris to `t` in pieces of six hours each (~1 ms each for
+// KSA's 46 bodies). Principia holds the ephemeris lock while it integrates,
+// and every flow takes it too: one long prolongation (a month of KSA's system
+// with geopotentials takes ~100 ms) would stall every vessel step and the
+// game's frame waiting on them.
+// Releasing the lock between pieces isn't enough: the lock isn't fair, and
+// this thread would take it straight back. So before each piece, the game's
+// waiting calls go first (up to `give_way` per piece, so a steady stream of
+// them can't stop the prolongation).
+absl::Status ProlongInPieces(principia_ksa_Ephemeris const* const e,
+                             Instant const& t,
+                             principia_ksa_PredictTimings* const timings = nullptr) {
+  Time const piece = 6 * Hour;
+  auto const give_way = std::chrono::milliseconds(5);
+  for (;;) {
+    Instant const reached = ToInstant(e->t_max.load());
+    if (reached >= t) {
+      return absl::OkStatus();
+    }
+    auto const waiting = std::chrono::steady_clock::now();
+    for (auto const until = waiting + give_way;
+         e->urgent.load() > 0 && std::chrono::steady_clock::now() < until;) {
+      std::this_thread::yield();
+    }
+    if (timings != nullptr) {
+      timings->give_way += MsSince(waiting);
+      ++timings->prolong_pieces;
+    }
+    if (absl::Status const status =
+            e->ephemeris->Prolong(std::min(t, reached + piece));
+        !status.ok()) {
+      return status;
+    }
+    PublishTimeRange(e);
+    if (ToInstant(e->t_max.load()) <= reached) {
+      return absl::InternalError("the ephemeris did not advance");
+    }
+  }
+}
 
 // Checks `t` against the range in which states can be evaluated; outside it,
 // ContinuousTrajectory would fail a CHECK.
@@ -298,8 +388,9 @@ principia_ksa_Status CheckTime(principia_ksa_Ephemeris const* const e,
   if (!Finite(t)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "time is not finite");
   }
-  Instant const t_min = e->ephemeris->t_min();
-  Instant const t_max = e->ephemeris->t_max();
+  // The published range: no lock, and never more than Principia has.
+  Instant const t_min = ToInstant(e->t_min.load());
+  Instant const t_max = ToInstant(e->t_max.load());
   Instant const instant = ToInstant(t);
   if (instant < t_min || instant > t_max) {
     return Fail(PRINCIPIA_KSA_OUT_OF_RANGE,
@@ -508,6 +599,7 @@ principia_ksa_Status principia_ksa__EphemerisCreate(
   if (!status.ok()) {
     return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, std::string(status.message()));
   }
+  PublishTimeRange(result.get());
   LOG(INFO) << "Created an ephemeris of " << count << " bodies at t0 = " << t0
             << " s since J2000";
   *ephemeris = result.release();
@@ -529,7 +621,7 @@ principia_ksa_Status principia_ksa__EphemerisProlong(
   if (!Finite(t)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "time is not finite");
   }
-  absl::Status const status = ephemeris->ephemeris->Prolong(ToInstant(t));
+  absl::Status const status = ProlongInPieces(ephemeris, ToInstant(t));
   if (!status.ok()) {
     return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, std::string(status.message()));
   }
@@ -545,8 +637,8 @@ principia_ksa_Status principia_ksa__EphemerisTimeRange(
   if (ephemeris == nullptr || t_min == nullptr || t_max == nullptr) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "null argument");
   }
-  *t_min = FromInstant(ephemeris->ephemeris->t_min());
-  *t_max = FromInstant(ephemeris->ephemeris->t_max());
+  *t_min = ephemeris->t_min.load();
+  *t_max = ephemeris->t_max.load();
   return PRINCIPIA_KSA_OK;
   PRINCIPIA_KSA_CATCH
 }
@@ -634,6 +726,7 @@ principia_ksa_Status principia_ksa__EphemerisGravitationalAcceleration(
     double const t,
     principia_ksa_XYZ* const acceleration) {
   PRINCIPIA_KSA_TRY
+  Urgent const urgent(ephemeris);  // The game waits on it.
   if (ephemeris == nullptr || acceleration == nullptr) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "null argument");
   }
@@ -659,6 +752,7 @@ principia_ksa_Status principia_ksa__EphemerisRelativeAcceleration(
     double const t,
     principia_ksa_XYZ* const acceleration) {
   PRINCIPIA_KSA_TRY
+  Urgent const urgent(ephemeris);  // The game waits on it.
   if (ephemeris == nullptr || acceleration == nullptr) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "null argument");
   }
@@ -697,6 +791,7 @@ principia_ksa_Status principia_ksa__FlowMassless(
     double const t1,
     principia_ksa_QP* const final_state) {
   PRINCIPIA_KSA_TRY
+  Urgent const urgent(ephemeris);  // The game waits on it.
   if (ephemeris == nullptr || initial == nullptr || final_state == nullptr) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "null argument");
   }
@@ -886,6 +981,8 @@ principia_ksa_Status principia_ksa__Predict(
     }
   };
 
+  predict_timings = {};
+  auto const predict_start = std::chrono::steady_clock::now();
   // How Principia's flow ends a chunk: kResourceExhausted when the step limit
   // is reached; OK at its target, or short of it on hitting a body (its
   // kOutOfRange is swallowed); kFailedPrecondition on falling into a centre.
@@ -897,13 +994,29 @@ principia_ksa_Status principia_ksa__Predict(
     Instant const from = chunk.back().time;
     Instant const target = final_time - from < chunk_span ? final_time
                                                           : from + chunk_span;
+    // The flow would prolong the ephemeris to `target` in one go, holding
+    // its lock throughout; in pieces, nothing else waits long.
+    ++predict_timings.chunks;
+    auto const prolong_start = std::chrono::steady_clock::now();
+    if (target != InfiniteFuture) {
+      if (absl::Status const prolonged =
+              ProlongInPieces(ephemeris, target, &predict_timings);
+          !prolonged.ok()) {
+        return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR,
+                    std::string(prolonged.message()));
+      }
+    }
     Ephemeris<Frame>::AdaptiveStepParameters const parameters(
         MonotonicIntegrator::Get(),
         std::min(steps_left, chunk_steps),
         length_tolerance * Metre,
         speed_tolerance * Metre / Second);
+    predict_timings.prolong += MsSince(prolong_start);
+    auto const flow_start = std::chrono::steady_clock::now();
     status = ephemeris->ephemeris->FlowWithAdaptiveStep(
         &chunk, intrinsic_acceleration, target, parameters);
+    predict_timings.flow += MsSince(flow_start);
+    auto const thinning_start = std::chrono::steady_clock::now();
     std::int64_t const taken = static_cast<std::int64_t>(chunk.size()) - 1;
     *steps += taken;
     steps_left -= taken;
@@ -915,7 +1028,10 @@ principia_ksa_Status principia_ksa__Predict(
                     std::string(appended.message()));
       }
     }
+    predict_timings.thinning += MsSince(thinning_start);
+    auto const apsides_start = std::chrono::steady_clock::now();
     find_apsides();
+    predict_timings.apsides += MsSince(apsides_start);
     bool const at_target = chunk.back().time == target;
     if (status.ok() && at_target && target == final_time) {
       *end = PRINCIPIA_KSA_PREDICTION_REACHED_END;
@@ -941,6 +1057,7 @@ principia_ksa_Status principia_ksa__Predict(
     chunk.ForgetBefore(chunk.back().time);
   }
 
+  predict_timings.total = MsSince(predict_start);
   // Into arrays the caller releases with principia_ksa__Free.
   int const n = static_cast<int>(thinned.size());
   *times = static_cast<double*>(std::malloc(sizeof(double) * n));
@@ -971,6 +1088,13 @@ principia_ksa_Status principia_ksa__Predict(
   }
   return PRINCIPIA_KSA_OK;
   PRINCIPIA_KSA_CATCH
+}
+
+void principia_ksa__LastPredictTimings(
+    principia_ksa_PredictTimings* const timings) {
+  if (timings != nullptr) {
+    *timings = predict_timings;
+  }
 }
 
 void principia_ksa__Free(void* const array) { std::free(array); }

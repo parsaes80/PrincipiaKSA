@@ -14,6 +14,7 @@ internal static class CelestialUpdatePatch
                                 IOrbiter ____readOnlyCelestial,
                                 SimStep ____simStep)
     {
+        using var profiled = FrameProfiler.PlanetState.Measure();
         if (____simStep.DeltaTime <= 0)
         {
             return;  // Paused: KSA leaves the state as it is.

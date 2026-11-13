@@ -46,21 +46,14 @@ internal static class SettingsWindow
         }
         else
         {
-            // How far ahead the lines reach now, as they change (not the
-            // planets' ephemeris, which only grows).
-            double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
-            var reach = new List<string>();
-            void Reach(Prediction? p, bool shown, string what)
-            {
-                if (shown && p is { Times.Length: > 0 } && p.Vehicle == Program.ControlledVehicle)
-                {
-                    reach.Add($"{Math.Max(0, p.Times[^1] - now) / 86400:F1} d ({what})");
-                }
-            }
-            Reach(Predictor.Latest, Settings.ShowPrediction, "prediction");
-            Reach(Predictor.LatestPlan, Settings.ShowFlightPlan, "flight plan");
-            ImGui.Text($"n-body gravity: {system.Links.Count()} bodies" +
-                       (reach.Count > 0 ? $", lines reach {string.Join(" / ", reach)}" : ""));
+            // How far the planets' ephemeris is integrated: it only grows,
+            // to wherever the lines or the game have needed it.
+            UniverseTime now = Universe.GetElapsedTime();
+            double tMax = system.Ephemeris.TimeRange.TMax;
+            double ahead = (tMax - GameTime.ToSecondsSinceJ2000(now)) / 86400;
+            ImGui.Text($"n-body gravity: {system.Links.Count()} bodies, planets integrated to " +
+                       $"{GameTime.ToDateTime(GameTime.FromSecondsSinceJ2000(tMax)):yyyy-MM-dd HH:mm} " +
+                       $"({ahead:F1} days ahead)");
         }
     }
 
@@ -112,8 +105,11 @@ internal static class SettingsWindow
             return;
         }
         double covered = (p.Times[^1] - p.Times[0]) / 86400;
-        // Otherwise its steps ran out: the usual end, there is no time limit.
-        string end = p.Impact ? ", ends in an impact" : "";
+        // Steps run out: the usual end.
+        string end = p.Impact ? ", ends in an impact"
+                   : p.AwaitingPlanets ? ", growing as the planets are integrated ahead"
+                   : p.End == PredictionEnd.ReachedEnd ? $", stops at {Predictor.MaxSpanYears:F0} years ahead"
+                   : "";
         ImGui.Text($"{covered:F2} days in {p.Steps:N0} steps{end}, {p.ComputeMs:F0} ms");
         if (p.Note != null)
         {

@@ -27,6 +27,9 @@ internal static class BurnAnchor
     // Kept while the burn time and the path are unchanged.
     private static readonly ConditionalWeakTable<Burn, Anchor> Anchors = new();
 
+    // The anchor last made for the burn, without making one.
+    public static Anchor? Cached(Burn burn) => Anchors.TryGetValue(burn, out Anchor? anchor) ? anchor : null;
+
     // A burn still ahead on Principia's path; null where there is none yet
     // (KSA's patch stands in) or for the transfer planner's departures.
     public static Anchor? Get(Burn burn)
@@ -175,6 +178,7 @@ internal static class BurnPatchAnchor
     [HarmonyPostfix]
     private static void Postfix(Burn burn, ref PatchedConic? __result)
     {
+        using var profiled = FrameProfiler.BurnAnchor.Measure();
         try
         {
             if (BurnAnchor.Get(burn) is { } anchor)

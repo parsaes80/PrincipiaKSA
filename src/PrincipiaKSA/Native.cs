@@ -61,6 +61,20 @@ internal struct Apsis
     public QP State;          // Absolute.
 }
 
+// Where a native Predict spent its time (ms); see principia_ksa.h.
+[StructLayout(LayoutKind.Sequential)]
+internal struct PredictTimings
+{
+    public double Total;
+    public double Prolong;
+    public double GiveWay;
+    public long ProlongPieces;
+    public double Flow;
+    public double Apsides;
+    public double Thinning;
+    public long Chunks;
+}
+
 internal enum PredictionEnd
 {
     ReachedEnd = 0,
@@ -204,4 +218,7 @@ internal static unsafe partial class Native
 
     [LibraryImport(LibraryName, EntryPoint = "principia_ksa__Free")]
     public static partial void Free(void* array);
+
+    [LibraryImport(LibraryName, EntryPoint = "principia_ksa__LastPredictTimings")]
+    public static partial void LastPredictTimings(out PredictTimings timings);
 }

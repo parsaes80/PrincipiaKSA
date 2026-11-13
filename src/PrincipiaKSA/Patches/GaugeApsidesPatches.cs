@@ -89,6 +89,7 @@ internal static class WarpToApsisPatch
     [HarmonyPostfix]
     private static void Postfix(Vehicle __instance)
     {
+        using var profiled = FrameProfiler.WarpApsides.Measure();
         try
         {
             if (!NBodyApsides.Applies(__instance))

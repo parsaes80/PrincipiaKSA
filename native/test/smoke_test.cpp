@@ -1,12 +1,14 @@
 // Exercises libprincipia_ksa.so through its C API only, as C# does, with a
 // Sun–Earth–Moon system. Run with `zig build test`.
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <limits>
 #include <numbers>
+#include <thread>
 #include <vector>
 
 #include "../principia_ksa.h"
@@ -621,6 +623,133 @@ int main(int argc, char** argv) {
                                         &geo) == PRINCIPIA_KSA_INVALID_ARGUMENT,
          "zero angular frequency → INVALID_ARGUMENT (not a CHECK abort)");
   std::printf("    (%s)\n", principia_ksa__LastError());
+  // Readers while another thread prolongs: the game's main thread reads the
+  // range every frame, and its job threads read states, while a background
+  // thread integrates the planets ahead. Principia holds its ephemeris lock
+  // for a whole Prolong; one month in one go stalled a frame by 108 ms.
+  std::printf("readers don't wait for a long prolongation:\n");
+  {
+    principia_ksa_Ephemeris* e = nullptr;
+    principia_ksa__EphemerisCreate(bodies, states, n, t0, 2100, 1e-3, &e);
+    double const far = t0 + 20 * year;
+    std::atomic<bool> done{false};
+    principia_ksa_Status prolonged = PRINCIPIA_KSA_INTERNAL;
+    auto const start = std::chrono::steady_clock::now();
+    std::thread prolonger([&] {
+      prolonged = principia_ksa__EphemerisProlong(e, far);
+      done = true;
+    });
+    principia_ksa_QP earth0;
+    principia_ksa__EphemerisBodyState(e, 1, t0, &earth0);
+    double const r_leo = 6.771e6, v_leo = std::sqrt(3.986004418e14 / r_leo);
+    principia_ksa_QP const leo{{earth0.q.x + r_leo, earth0.q.y, earth0.q.z},
+                               {earth0.p.x, earth0.p.y + v_leo, earth0.p.z}};
+    double range_ms = 0, state_ms = 0, flow_ms = 0, acceleration_ms = 0;
+    int reads = 0;
+    while (!done) {
+      auto const r0 = std::chrono::steady_clock::now();
+      double t_min, t_max;
+      principia_ksa__EphemerisTimeRange(e, &t_min, &t_max);
+      auto const r1 = std::chrono::steady_clock::now();
+      principia_ksa_QP earth_now;
+      principia_ksa__EphemerisBodyState(e, 1, t0 + 0.5 * (t_max - t0), &earth_now);
+      auto const r2 = std::chrono::steady_clock::now();
+      // A vessel's step and its thrust gravity, as on KSA's job threads.
+      principia_ksa_QP after;
+      principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, &after);
+      auto const r3 = std::chrono::steady_clock::now();
+      principia_ksa_XYZ g;
+      principia_ksa__EphemerisRelativeAcceleration(e, 1, {r_leo, 0, 0}, t0, &g);
+      auto const r4 = std::chrono::steady_clock::now();
+      range_ms = std::fmax(range_ms, std::chrono::duration<double, std::milli>(r1 - r0).count());
+      state_ms = std::fmax(state_ms, std::chrono::duration<double, std::milli>(r2 - r1).count());
+      flow_ms = std::fmax(flow_ms, std::chrono::duration<double, std::milli>(r3 - r2).count());
+      acceleration_ms =
+          std::fmax(acceleration_ms, std::chrono::duration<double, std::milli>(r4 - r3).count());
+      ++reads;
+    }
+    prolonger.join();
+    double const total_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - start).count();
+    double t_min, t_max;
+    principia_ksa__EphemerisTimeRange(e, &t_min, &t_max);
+    std::printf("  20 years in %.0f ms; %d rounds of calls meanwhile, longest: range %.3f ms, "
+                "state %.3f ms, vessel step %.3f ms, thrust gravity %.3f ms\n",
+                total_ms, reads, range_ms, state_ms, flow_ms, acceleration_ms);
+    Expect(prolonged == PRINCIPIA_KSA_OK && t_max >= far, "the prolongation reaches 20 years");
+    Expect(range_ms < 2, "reading the range never waits for it (< 2 ms)");
+    Expect(state_ms < 10, "reading a state waits a piece at most (< 10 ms)");
+    Expect(flow_ms < 10, "a vessel step waits a piece at most (< 10 ms)");
+    Expect(acceleration_ms < 10, "thrust gravity waits a piece at most (< 10 ms)");
+    principia_ksa__EphemerisDestroy(e);
+  }
+
+  // The vessel's own calls while a long prediction runs: in the game a
+  // vessel's step and its thrust gravity wait on KSA's job threads, and the
+  // frame waits on them. A prediction reaching months ahead into planets not
+  // yet integrated held them up ~110 ms a frame.
+  std::printf("the vessel's calls don't wait for a long prediction:\n");
+  {
+    principia_ksa_Body fields[] = {
+        {"Sun", 1.32712440018e20},
+        {"Earth", 3.986004418e14, 6.371e6, {0, 0, 1}, {1, 0, 0}, t0,
+         7.2921159e-5, "Earth"},
+        {"Moon", 4.9048695e12, 1.7374e6, {0, 0, 1}, {1, 0, 0}, t0,
+         2.6617e-6, "Moon"},
+    };
+    principia_ksa_Ephemeris* e = nullptr;
+    principia_ksa__EphemerisCreate(fields, states, n, t0, 2100, 1e-3, &e);
+    principia_ksa__EphemerisProlong(e, t0 + 3600);
+    principia_ksa_QP earth;
+    principia_ksa__EphemerisBodyState(e, 1, t0, &earth);
+    // A high, eccentric orbit: 1,024 steps reach months ahead.
+    double const rp = 6.771e6, ra = 3.0e8, a = 0.5 * (rp + ra);
+    double const vp = std::sqrt(3.986004418e14 * (2 / rp - 1 / a));
+    principia_ksa_QP const high{{earth.q.x + rp, earth.q.y, earth.q.z},
+                                {earth.p.x, earth.p.y + vp, earth.p.z}};
+    double const r = 6.771e6, v = std::sqrt(3.986004418e14 / r);
+    principia_ksa_QP const leo{{earth.q.x, earth.q.y + r, earth.q.z},
+                               {earth.p.x - v, earth.p.y, earth.p.z}};
+    std::atomic<bool> done{false};
+    Prediction long_prediction;
+    auto const start = std::chrono::steady_clock::now();
+    std::thread predictor([&] {
+      long_prediction = Predict(e, &high, t0, infinity, 1 << 14);
+      done = true;
+    });
+    double flow_ms = 0, acceleration_ms = 0;
+    int calls = 0;
+    bool ok = true;
+    while (!done) {
+      auto const c0 = std::chrono::steady_clock::now();
+      principia_ksa_QP after;
+      ok &= principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, &after) == PRINCIPIA_KSA_OK;
+      auto const c1 = std::chrono::steady_clock::now();
+      principia_ksa_XYZ g;
+      ok &= principia_ksa__EphemerisRelativeAcceleration(e, 1, {r, 0, 0}, t0, &g) ==
+            PRINCIPIA_KSA_OK;
+      auto const c2 = std::chrono::steady_clock::now();
+      flow_ms = std::fmax(flow_ms, std::chrono::duration<double, std::milli>(c1 - c0).count());
+      acceleration_ms =
+          std::fmax(acceleration_ms, std::chrono::duration<double, std::milli>(c2 - c1).count());
+      ++calls;
+    }
+    predictor.join();
+    double const total_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - start).count();
+    double const days = long_prediction.count() > 0
+                            ? (long_prediction.times.back() - t0) / 86400 : 0;
+    std::printf("  prediction: %.0f d in %lld steps, %.0f ms; %d vessel steps meanwhile, longest: "
+                "flow %.3f ms, thrust gravity %.3f ms\n",
+                days, static_cast<long long>(long_prediction.steps), total_ms, calls,
+                flow_ms, acceleration_ms);
+    Expect(long_prediction.status == PRINCIPIA_KSA_OK && days > 30 && ok,
+           "a prediction months ahead, with vessel steps alongside");
+    Expect(flow_ms < 10, "a vessel step never waits long for it (< 10 ms)");
+    Expect(acceleration_ms < 10, "thrust gravity never waits long for it (< 10 ms)");
+    principia_ksa__EphemerisDestroy(e);
+  }
+
   principia_ksa__SetLogCallback(nullptr);
   std::printf(failures == 0 ? "ALL PASSED\n" : "%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;
