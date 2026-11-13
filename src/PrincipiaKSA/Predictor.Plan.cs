@@ -223,12 +223,21 @@ internal static partial class Predictor
             s0 = trajectory.States[k];
             sphere = SphereAt(system, r.Frame, trajectory.Times, trajectory.States, k);
         }
-        double hi = node.Time + node.Window;
+        // To the end of the window, but, as the lines (Trajectory.Extend), no
+        // further than the planets are integrated and a day: the background
+        // thread is asked for the rest, and the track grows over the next
+        // updates instead of every track waiting for the planets now.
+        double wanted = node.Time + node.Window;
+        double hi = Math.Min(wanted, ephemeris.TimeRange.TMax + AheadOfPlanets);
+        if (hi < wanted)
+        {
+            system.Prolonger.Request(wanted);
+        }
         if (!(hi > t0))
         {
             return null;
         }
-        // At the plan's tolerance, to the end of the window.
+        // At the plan's tolerance.
         Ephemeris.PredictionResult p = ephemeris.Predict(s0, t0, hi, Settings.MaxSteps, r.PlanTolerance,
                                                          double3.Zero, 0, 0, 0, ReadOnlySpan<int>.Empty);
         int count = p.Times.Length;

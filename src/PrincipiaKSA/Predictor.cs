@@ -344,14 +344,14 @@ internal static partial class Predictor
     // How far a node's approach track reaches either side of it, and so how
     // far one drag step may move it (0.9 of it): half its orbit, so that the
     // node can go anywhere on the orbit at once; unbound, half the time to it.
-    // From 10 min to 30 days: the track is integrated on every update, and a
-    // drag also stops at the node's sphere of influence. The track follows the
-    // node as it moves.
+    // From 10 min to 60 days: the track is integrated on every update (and
+    // only as far as the planets are, NodeTrackOf), and a drag also stops at
+    // the node's sphere of influence. The track follows the node as it moves.
     public static double NodeWindow(Orbit orbit, double ahead)
     {
         double period = orbit.Period;
         double half = orbit.IsBound() && double.IsFinite(period) && period > 0 ? period / 2 : ahead / 2;
-        return double.IsFinite(half) ? Math.Clamp(half, 600, 30 * 86400.0) : 3600;
+        return double.IsFinite(half) ? Math.Clamp(half, 600, 60 * 86400.0) : 3600;
     }
 
     // Every node still ahead, with or without Δv.
