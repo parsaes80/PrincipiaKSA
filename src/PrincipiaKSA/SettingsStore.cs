@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace PrincipiaKSA;
 
-// The window's settings, kept in settings.json next to the mod's DLL: saved
-// a couple of seconds after a change, and at exit. The lines' switches and
-// lengths are not kept: every launch starts from Settings' values.
+// The window's settings, and log2terminal, kept in settings.json next to the
+// mod's DLL: saved a couple of seconds after a change, and at exit (so a file
+// without a key gets it, at its default). The lines' switches, steps and
+// tolerances are not kept: every launch starts from Settings' values.
 internal static class SettingsStore
 {
     private sealed class Data
@@ -14,6 +16,12 @@ internal static class SettingsStore
         public string? CentreBody { get; set; } = Settings.CentreBody;
         public string? SecondaryBody { get; set; } = Settings.SecondaryBody;
         public bool StartupChecks { get; set; } = Settings.StartupChecks;
+        public bool WindowEnabled { get; set; } = Settings.WindowEnabled;
+        public bool WindowAlwaysOnTop { get; set; } = Settings.WindowAlwaysOnTop;
+        public bool WindowLocked { get; set; } = Settings.WindowLocked;
+        public bool WindowDetached { get; set; } = Settings.WindowDetached;
+        [JsonPropertyName("log2terminal")]
+        public bool Log2Terminal { get; set; } = Settings.Log2Terminal;
     }
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
@@ -39,6 +47,11 @@ internal static class SettingsStore
             Settings.CentreBody = d.CentreBody;
             Settings.SecondaryBody = d.SecondaryBody;
             Settings.StartupChecks = d.StartupChecks;
+            Settings.WindowEnabled = d.WindowEnabled;
+            Settings.WindowAlwaysOnTop = d.WindowAlwaysOnTop;
+            Settings.WindowLocked = d.WindowLocked;
+            Settings.WindowDetached = d.WindowDetached;
+            Settings.Log2Terminal = d.Log2Terminal;
             _saved = json;  // A file with keys no longer kept is rewritten without them.
             Log.Info($"Settings loaded from {FilePath}");
         }

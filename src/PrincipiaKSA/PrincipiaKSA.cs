@@ -15,6 +15,8 @@ public class PrincipiaKSA
     [StarMapImmediateLoad]
     public void Init(Mod definingMod)
     {
+        // First: whether the log also goes to the terminal (log2terminal).
+        SettingsStore.Load();
         Log.Info("Hello from PrincipiaKSA!");
         Log.Info($"KSA.dll version: {typeof(Mod).Assembly.GetName().Version}");
         Log.Info($"Running on .NET {Environment.Version}, {Environment.OSVersion}");
@@ -25,7 +27,6 @@ public class PrincipiaKSA
                       "this one lacks them, so the mod is disabled");
             return;
         }
-        SettingsStore.Load();
 
         // The native library, with Principia's log routed into ours.
         try

@@ -1,14 +1,23 @@
 using Brutal.ImGuiApi;
+using HarmonyLib;
 using Brutal.Numerics;
 using KSA;
 
 namespace PrincipiaKSA;
 
 // The PrincipiaKSA window: status, prediction, plotting frame, flight plan
-// and upcoming events.
+// and upcoming events. Drawn as KSA draws its own console windows (Ground
+// Track, Target Track...): KSA's ConsoleStyle chrome, palette and widget
+// style, at the game's interface scale and font.
 internal static class SettingsWindow
 {
     private static bool _logged;
+
+    // At interface scale 1; KSA's console windows are sized in pixels too.
+    private static readonly float2 InitialSize = new(460, 640);
+
+    // "Reset" chosen: back to the initial place and size, next frame.
+    private static bool _reset;
 
     public static void Draw()
     {
@@ -17,21 +26,85 @@ internal static class SettingsWindow
             _logged = true;
             Log.Info("PrincipiaKSA window is being drawn");
         }
-        ImGui.SetNextWindowSize(new float2(400, 0), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("PrincipiaKSA"))
+        if (!Settings.WindowEnabled)
         {
-            PrincipiaSystem? system = PrincipiaSystem.Current;
-            DrawStatus(system);
-            if (system != null && !system.Failed)
-            {
-                DrawPrediction();
-                DrawFrame(system);
-                DrawFlightPlan(system);
-                DrawEvents();
-                DrawDiagnostics();
-            }
+            return;  // Back from KSA's HUD menu (HudMenuPatch).
         }
-        ImGui.End();
+        float scale = GameSettings.GetInterfaceScale();
+        ImGuiViewportPtr viewport = ImGui.GetMainViewport();
+        ImGuiCond place = _reset ? ImGuiCond.Always : ImGuiCond.FirstUseEver;
+        _reset = false;
+        ImGui.SetNextWindowPos(viewport.WorkPos + new float2(40, 80) * scale, place, (float2?)null);
+        ImGuiWindowFlags flags = Settings.WindowLocked ? ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize
+                                                       : ImGuiWindowFlags.None;
+        // As KSA's windows: on top of the game when detached, if chosen.
+        ImGuiWindow.SetNextTopMost(Settings.WindowDetached, Settings.WindowAlwaysOnTop);
+        // No close button, as KSA's panels: hidden with "Enabled" instead.
+        if (!ConsoleStyle.BeginWindow("PrincipiaKSA", "PrincipiaKSA", "PKSA", InitialSize * scale, flags, place,
+                                      pinToMainViewport: !Settings.WindowDetached))
+        {
+            return;  // Collapsed or hidden: ImGui's End is already called.
+        }
+        ConsoleStyle.BeginBody();
+        ConsoleStyle.PushWidgetStyle();
+        WindowMenu("##PrincipiaKSA body menu");
+        PrincipiaSystem? system = PrincipiaSystem.Current;
+        DrawStatus(system);
+        if (system != null && !system.Failed)
+        {
+            DrawPrediction();
+            DrawFrame(system);
+            DrawFlightPlan(system);
+            DrawEvents();
+            DrawDiagnostics();
+        }
+        ConsoleStyle.PopWidgetStyle();
+        ConsoleStyle.EndBody();
+        // Right click on the title bar or footer too.
+        ConsoleStyle.PushWidgetStyle();
+        WindowMenu("##PrincipiaKSA window menu");
+        ConsoleStyle.PopWidgetStyle();
+        ConsoleStyle.BeginFooter();
+        ConsoleStyle.EndFooter();
+        ConsoleStyle.EndWindow();
+    }
+
+    // The menu KSA's panels have on a right click (GaugeCanvas), the same
+    // items in the same order.
+    private static void WindowMenu(string id)
+    {
+        if (!ImGui.BeginPopupContextWindow(id))
+        {
+            return;
+        }
+        if (ImGuiHelper.DrawMenuItem("Enabled"u8, Settings.WindowEnabled))
+        {
+            Settings.WindowEnabled = !Settings.WindowEnabled;
+        }
+        ImGui.Separator();
+        // Only for a window of its own: within the game's, it is drawn with the rest.
+        if (ImGuiHelper.DrawMenuItem("Always on top"u8, Settings.WindowAlwaysOnTop, !Settings.WindowDetached))
+        {
+            Settings.WindowAlwaysOnTop = !Settings.WindowAlwaysOnTop;
+        }
+        if (ImGuiHelper.DrawMenuItem("Reset"u8, isSelected: false))
+        {
+            _reset = true;
+            Settings.WindowDetached = false;
+        }
+        if (Program.AllowMultipleWindows)
+        {
+            ImGuiHelper.DrawMenuItem("Detached"u8, ref Settings.WindowDetached);
+        }
+        ImGuiHelper.DrawMenuItem("Lock"u8, ref Settings.WindowLocked);
+        ImGui.EndPopup();
+    }
+
+    // A section, headed as KSA's console windows head theirs.
+    private static void Section(string title)
+    {
+        ImGui.Spacing();
+        ConsoleWidgets.RegionHeader(title);
     }
 
     private static void DrawStatus(PrincipiaSystem? system)
@@ -42,7 +115,7 @@ internal static class SettingsWindow
         }
         else if (system.Failed)
         {
-            ImGui.Text("Stopped: " + system.FailureReason);
+            ImGui.TextColored(in ConsoleStyle.Danger, "Stopped: " + system.FailureReason);
         }
         else
         {
@@ -59,10 +132,7 @@ internal static class SettingsWindow
 
     private static void DrawPrediction()
     {
-        if (!ImGui.CollapsingHeader("Prediction", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            return;
-        }
+        Section("Prediction");
         ImGui.Checkbox("Show prediction (coasting)", ref Settings.ShowPrediction);
         Selector("Tolerance", "prediction tolerance", ref Settings.PredictionToleranceIndex,
                  Settings.PredictionTolerances.Length,
@@ -76,7 +146,7 @@ internal static class SettingsWindow
         }
         if (Predictor.LastError is { } error)
         {
-            ImGui.Text("Prediction failed: " + error);
+            ImGui.TextColored(in ConsoleStyle.Danger, "Prediction failed: " + error);
         }
     }
 
@@ -110,19 +180,16 @@ internal static class SettingsWindow
                    : p.AwaitingPlanets ? ", growing as the planets are integrated ahead"
                    : p.End == PredictionEnd.ReachedEnd ? $", stops at {Predictor.MaxSpanYears:F0} years ahead"
                    : "";
-        ImGui.Text($"{covered:F2} days in {p.Steps:N0} steps{end}, {p.ComputeMs:F0} ms");
+        ImGui.TextDisabled($"{covered:F2} days in {p.Steps:N0} steps{end}, {p.ComputeMs:F0} ms");
         if (p.Note != null)
         {
-            ImGui.Text(p.Note);
+            ImGui.TextColored(in ConsoleStyle.Pending, p.Note);
         }
     }
 
     private static void DrawFrame(PrincipiaSystem system)
     {
-        if (!ImGui.CollapsingHeader("Plotting frame", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            return;
-        }
+        Section("Plotting frame");
         int kind = (int)Settings.Frame;
         ImGui.RadioButton("Body-centred", ref kind, (int)PlotFrame.BodyCentred);
         ImGui.SameLine();
@@ -138,7 +205,7 @@ internal static class SettingsWindow
         }
         if (Predictor.Latest is { } p)
         {
-            ImGui.Text($"Drawn {p.Frame.Describe()}");
+            ImGui.TextDisabled($"Drawn {p.Frame.Describe()}");
         }
     }
 
@@ -254,10 +321,7 @@ internal static class SettingsWindow
     // KSA's planned burns, read-only: KSA's burn tool is the planner.
     private static void DrawFlightPlan(PrincipiaSystem system)
     {
-        if (!ImGui.CollapsingHeader("Flight plan", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            return;
-        }
+        Section("Flight plan");
         ImGui.Checkbox("Show flight plan", ref Settings.ShowFlightPlan);
         Selector("Tolerance", "plan tolerance", ref Settings.PlanToleranceIndex, Settings.PlanTolerances.Length,
                  Settings.PlanToleranceNames[Settings.PlanToleranceIndex]);
@@ -267,7 +331,7 @@ internal static class SettingsWindow
                  $"{Settings.PlanSteps:N0}");
         if (Program.ControlledVehicle is not { } vehicle)
         {
-            ImGui.Text("No vessel.");
+            ImGui.TextDisabled("No vessel.");
             return;
         }
         BurnPlan plan = vehicle.BurnPlan;
@@ -300,7 +364,7 @@ internal static class SettingsWindow
         }
         if (shown == 0)
         {
-            ImGui.Text("No planned burns.");
+            ImGui.TextDisabled("No planned burns.");
         }
         else if (Settings.ShowFlightPlan)
         {
@@ -308,30 +372,24 @@ internal static class SettingsWindow
         }
         if (BurnTargetRefresher.Refreshes > 0)
         {
-            ImGui.Text($"Burn target kept on the n-body trajectory ({BurnTargetRefresher.LastChangeDegrees:F3}° " +
-                       "last correction)");
+            ImGui.TextDisabled($"Burn target kept on the n-body trajectory " +
+                               $"({BurnTargetRefresher.LastChangeDegrees:F3}° last correction)");
         }
     }
 
     private static void DrawDiagnostics()
     {
-        if (!ImGui.CollapsingHeader("Diagnostics"))
-        {
-            return;
-        }
+        Section("Diagnostics");
         ImGui.Checkbox("Show KSA's patched conics", ref Settings.ShowKsaConics);
         ImGui.Checkbox("Check KSA's frames at the next launch", ref Settings.StartupChecks);
-        ImGui.Text("Logs to mods/PrincipiaKSA/PrincipiaKSA.log");
+        ImGui.TextDisabled("Logs to mods/PrincipiaKSA/PrincipiaKSA.log");
     }
 
     private const int VisibleEvents = 10;
 
     private static void DrawEvents()
     {
-        if (!ImGui.CollapsingHeader("Upcoming", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            return;
-        }
+        Section("Upcoming");
         double now = GameTime.ToSecondsSinceJ2000(Universe.GetElapsedTime());
         var events = new List<(double Time, string Text)>();
         void Add(Prediction? p, string prefix)
@@ -356,6 +414,7 @@ internal static class SettingsWindow
         if (Settings.ShowFlightPlan) Add(Predictor.LatestPlan, "Plan: ");
         if (events.Count == 0)
         {
+            ImGui.TextDisabled("Nothing ahead on the lines.");
             return;
         }
         // Every event, in a box as tall as them up to VisibleEvents lines,
@@ -371,5 +430,27 @@ internal static class SettingsWindow
             }
         }
         ImGui.EndChild();
+    }
+}
+
+// KSA's HUD menu lists its panels to show or hide them (GaugeCanvas):
+// PrincipiaKSA's window too, so that one hidden with "Enabled" comes back.
+[HarmonyPatch(typeof(GaugeCanvas), nameof(GaugeCanvas.OnDrawMenuBar))]
+internal static class HudMenuPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix()
+    {
+        try
+        {
+            if (ImGui.MenuItem("PrincipiaKSA"u8, default, Settings.WindowEnabled))
+            {
+                Settings.WindowEnabled = !Settings.WindowEnabled;
+            }
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[window] PrincipiaKSA in KSA's HUD menu", e);
+        }
     }
 }

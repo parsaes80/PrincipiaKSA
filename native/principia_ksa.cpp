@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "absl/log/globals.h"
 #include "absl/log/initialize.h"
 #include "absl/log/internal/globals.h"
 #include "absl/log/log.h"
@@ -515,6 +516,9 @@ void principia_ksa__SetLogCallback(principia_ksa_LogCallback const callback) {
     if (!absl::log_internal::IsInitialized()) {
       absl::InitializeLog();
     }
+    // Only to the callback: Abseil would also print errors to stderr, and
+    // the mod decides where its log goes (log2terminal).
+    absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfinity);
     log_sink = new CallbackLogSink;
     absl::AddLogSink(log_sink);
     LOG(INFO) << "Principia logging routed to PrincipiaKSA";

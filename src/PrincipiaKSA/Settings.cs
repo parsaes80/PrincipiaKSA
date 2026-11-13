@@ -60,4 +60,16 @@ internal static class Settings
     public static bool StartupChecks = false;
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For BarycentricRotating; null: automatic.
+
+    // The window, as KSA's panels (right click on it): shown (else listed
+    // unchecked in KSA's HUD menu), always on top (when detached), locked
+    // (no moving or resizing), detached (its own OS window).
+    public static bool WindowEnabled = true;
+    public static bool WindowAlwaysOnTop = true;
+    public static bool WindowLocked = false;
+    public static bool WindowDetached = false;
+
+    // The mod's log (Principia's included) also to the terminal; it always
+    // goes to PrincipiaKSA.log. Only in settings.json ("log2terminal").
+    public static bool Log2Terminal = false;
 }

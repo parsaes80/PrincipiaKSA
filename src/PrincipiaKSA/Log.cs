@@ -1,6 +1,7 @@
 namespace PrincipiaKSA;
 
-// Logs to the console and to PrincipiaKSA.log next to the mod's DLL.
+// Logs to PrincipiaKSA.log next to the mod's DLL, and to the terminal too
+// with log2terminal in settings.json (Settings.Log2Terminal).
 internal static class Log
 {
     private static readonly string LogPath =
@@ -37,7 +38,10 @@ internal static class Log
     private static void Write(string level, string message)
     {
         string line = $"[{DateTime.Now:HH:mm:ss.fff}] [PrincipiaKSA] [{level}] {message}";
-        Console.WriteLine(line);
+        if (Settings.Log2Terminal)
+        {
+            Console.WriteLine(line);
+        }
         lock (Lock)
         {
             try { File.AppendAllText(LogPath, line + Environment.NewLine); } catch { }
