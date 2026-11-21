@@ -23,7 +23,7 @@ ported it to KSA. N-body gravity offers much more depth to game and is very fun 
 
 ## Install (players)
 
-**REQUIREMENT**: A CPU with AVX and FMA (Intel Haswell / AMD Zen or later).
+**REQUIREMENT**: A CPU with AVX and FMA (Intel Haswell / AMD Zen or later), or Apple Silicon.
 
 **Option 1 (Recommended)**: Install the mod using Borea, KSA's mod manager tool.
 
@@ -42,7 +42,7 @@ ported it to KSA. N-body gravity offers much more depth to game and is very fun 
    ```
 4. Downlaod StarMap, point StarMap's path in the settings file to the KSA install dir. Start KSA through By running StarMap.
 
-The same package runs on Linux and Windows (x64).
+The same package runs on Linux and Windows (x64) and Apple Silicon.
 
 ## Layout
 
@@ -78,7 +78,7 @@ once. The output is in `zig-out/`:
 
 | Path | What |
 |---|---|
-| `zig-out/PrincipiaKSA/` | The mod folder, ready to copy into KSA's mods folder: `PrincipiaKSA.dll`, `mod.toml`, the native library for Linux (`libprincipia_ksa_AVX.so`) and Windows (`principia_ksa_AVX.dll`), Principia's gravity model, `README.txt`, `VERSION`, `licenses/` |
+| `zig-out/PrincipiaKSA/` | The mod folder, ready to copy into KSA's mods folder: `PrincipiaKSA.dll`, `mod.toml`, the native library for Linux (`libprincipia_ksa_AVX.so`), Windows (`principia_ksa_AVX.dll`) and Apple Silicon (`libprincipia_ksa_arm64.dylib`), Principia's gravity model, `README.txt`, `VERSION`, `licenses/` |
 | `zig-out/PrincipiaKSA.zip` | The same folder, zipped, for a release |
 | `zig-out/windows-test/` | The native smoke test for Windows: run `run_smoke_test.bat` there, which writes `smoke_test_output.txt` |
 

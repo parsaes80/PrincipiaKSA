@@ -1,4 +1,4 @@
-//! game <game|run> <mods folder, or -> (<name> <file>)...
+//! game <game|run> <mods folder, or -> <KSA folder> (<name> <file>)...
 //!
 //! Installs the mod's files into <mods folder>/PrincipiaKSA, keeping its
 //! settings and log, and any file not given (the native library, when only
@@ -15,14 +15,18 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 3 or (args.len - 3) % 2 != 0) {
-        std.debug.print("usage: game <game|run> <mods folder, or -> (<name> <file>)...\n", .{});
+    if (args.len < 4 or (args.len - 4) % 2 != 0) {
+        std.debug.print("usage: game <game|run> <mods folder, or -> <KSA folder> (<name> <file>)...\n", .{});
         return error.Usage;
     }
+    const ksa = args[3];
     const home = init.environ_map.get("HOME") orelse init.environ_map.get("USERPROFILE") orelse
         return error.NoHomeFolder;
     const ksa_user = try std.fs.path.join(arena, &.{ home, "Documents", "My Games", "Kitten Space Agency" });
-    const borea = try std.fs.path.join(arena, &.{ home, ".local", "share", "Borea" });
+    const borea = if (builtin.os.tag == .macos)
+        try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Borea" })
+    else
+        try std.fs.path.join(arena, &.{ home, ".local", "share", "Borea" });
     const instance = try boreaInstance(arena, io, borea);
 
     const mods = if (!std.mem.eql(u8, args[2], "-"))
@@ -33,26 +37,31 @@ pub fn main(init: std.process.Init) !void {
         try std.fs.path.join(arena, &.{ ksa_user, "mods" });
     const destination = try std.fs.path.join(arena, &.{ mods, "PrincipiaKSA" });
     const cwd = Io.Dir.cwd();
-    var i: usize = 3;
+    var i: usize = 4;
     while (i < args.len) : (i += 2) {
         const path = try std.fs.path.join(arena, &.{ destination, args[i] });
         try cwd.createDirPath(io, std.fs.path.dirname(path).?);
         try Io.Dir.copyFile(cwd, args[i + 1], cwd, path, io, .{});
     }
     // The native library this platform loads, given or installed before.
-    const native = if (builtin.os.tag == .windows) "principia_ksa_AVX.dll" else "libprincipia_ksa_AVX.so";
+    const native = switch (builtin.os.tag) {
+        .windows => "principia_ksa_AVX.dll",
+        .macos => "libprincipia_ksa_arm64.dylib",
+        else => "libprincipia_ksa_AVX.so",
+    };
     const library = try std.fs.path.join(arena, &.{ destination, native });
     cwd.access(io, library, .{}) catch {
         std.debug.print("No native library at {s}: install everything once (zig build game, " ++
             "without -Dcs)\n", .{library});
         return error.NoNativeLibrary;
     };
-    std.debug.print("PrincipiaKSA installed to {s} ({d} files)\n", .{ destination, (args.len - 3) / 2 });
+    std.debug.print("PrincipiaKSA installed to {s} ({d} files)\n", .{ destination, (args.len - 4) / 2 });
     if (!std.mem.eql(u8, args[1], "run")) return;
 
     // StarMap passes its other arguments on to KSA.
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(arena, &.{ "dotnet", "StarMap.dll" });
+    const host = if (builtin.os.tag == .macos) try std.fs.path.join(arena, &.{ ksa, "KSA" }) else "dotnet";
+    try argv.appendSlice(arena, &.{ host, "StarMap.dll" });
     var environ = try init.environ_map.clone(arena);
     var starmap: []const u8 = undefined;
     if (instance) |dir| {
