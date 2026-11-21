@@ -22,13 +22,6 @@ public class PrincipiaKSA
         Log.Info("Hello from PrincipiaKSA!");
         Log.Info($"KSA.dll version: {typeof(Mod).Assembly.GetName().Version}");
         Log.Info($"Running on .NET {Environment.Version}, {Environment.OSVersion}");
-        // Only the AVX/FMA build ships; without them, leave KSA unmodded.
-        if (!Native.CpuSupported)
-        {
-            Log.Error("PrincipiaKSA needs a CPU with AVX and FMA (Intel Haswell / AMD Zen or later) " +
-                      "or Apple Silicon; this one lacks them, so the mod is disabled");
-            return;
-        }
 
         // The native library, with Principia's log routed into ours.
         try
@@ -39,6 +32,12 @@ public class PrincipiaKSA
             string model = Path.Combine(Path.GetDirectoryName(typeof(PrincipiaKSA).Assembly.Location) ?? ".",
                                         "sol_gravity_model.proto.txt");
             Native.Check(Native.LoadGravityModel(model));
+        }
+        catch (DllNotFoundException e)
+        {
+            // Unsupported CPU or missing library: leave KSA unmodded.
+            Log.Error($"{e.Message}; the mod is disabled");
+            return;
         }
         catch (Exception e)
         {

@@ -99,8 +99,8 @@ internal static class DeserializeSavePatch
     }
 }
 
-// After KSA loads a star system, builds the Principia ephemeris from it. With
-// startup checks on, first lists the bodies and checks KSA's frames.
+// After KSA loads a star system, lists its bodies, checks KSA's frames, then
+// builds the Principia ephemeris from it.
 [HarmonyPatch(typeof(Universe), nameof(Universe.LoadSystem))]
 internal static class LoadSystemPatch
 {
@@ -115,11 +115,8 @@ internal static class LoadSystemPatch
                 Log.Warn($"LoadSystem('{id}') finished but CurrentSystem is null");
                 return;
             }
-            if (Settings.StartupChecks)
-            {
-                ListBodies(id, system);
-                FrameProbe.Run(system);
-            }
+            ListBodies(id, system);
+            FrameProbe.Run(system);
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             PrincipiaSystem principia = PrincipiaSystem.Build(system);

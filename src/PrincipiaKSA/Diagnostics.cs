@@ -4,7 +4,7 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// The status line every 10 s (Diagnostics) and the optional startup check
+// The status line every 10 s (Diagnostics) and the startup check
 // of KSA's frames (FrameProbe).
 
 // A status line every 10 seconds: time and warp, how far ahead Principia is,

@@ -102,13 +102,12 @@ internal static unsafe partial class Native
 
     private static IntPtr _handle;
 
-    // Built for AVX and FMA (or Apple Silicon) only; never loaded on a CPU
-    // without them, where it would crash the game.
     public static readonly string LibraryFile =
         OperatingSystem.IsWindows() ? $"{LibraryName}_AVX.dll" :
         OperatingSystem.IsMacOS() ? $"lib{LibraryName}_arm64.dylib" : $"lib{LibraryName}_AVX.so";
 
-    public static bool CpuSupported => OperatingSystem.IsMacOS()
+    // The library is built for x64 with AVX and FMA, or Apple Silicon; on another CPU it would crash the game.
+    private static bool CpuSupported => OperatingSystem.IsMacOS()
         ? RuntimeInformation.ProcessArchitecture == Architecture.Arm64
         : System.Runtime.Intrinsics.X86.Avx.IsSupported && System.Runtime.Intrinsics.X86.Fma.IsSupported;
 
@@ -122,7 +121,8 @@ internal static unsafe partial class Native
         {
             if (!CpuSupported)
             {
-                throw new DllNotFoundException($"{LibraryFile} needs a CPU with AVX and FMA, or Apple Silicon");
+                throw new DllNotFoundException(
+                    "PrincipiaKSA needs a CPU with AVX and FMA (Intel Haswell / AMD Zen or later) or Apple Silicon");
             }
             string path = Path.Combine(Path.GetDirectoryName(assembly.Location) ?? ".", LibraryFile);
             Log.Info($"Loading native library {path}");

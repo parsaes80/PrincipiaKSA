@@ -54,8 +54,6 @@ internal static class Settings
 
     public static PlotFrame Frame = PlotFrame.BodyCentred;
 
-    // At system load: list the bodies and check KSA's frames.
-    public static bool StartupChecks = false;
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For BarycentricRotating; null: automatic.
 
@@ -83,7 +81,6 @@ internal static class SettingsStore
         public string Frame { get; set; } = Settings.Frame.ToString();
         public string? CentreBody { get; set; } = Settings.CentreBody;
         public string? SecondaryBody { get; set; } = Settings.SecondaryBody;
-        public bool StartupChecks { get; set; } = Settings.StartupChecks;
         public bool WindowEnabled { get; set; } = Settings.WindowEnabled;
         public bool WindowAlwaysOnTop { get; set; } = Settings.WindowAlwaysOnTop;
         public bool WindowLocked { get; set; } = Settings.WindowLocked;
@@ -114,7 +111,6 @@ internal static class SettingsStore
             Settings.Frame = Enum.TryParse(d.Frame, out PlotFrame frame) ? frame : PlotFrame.BodyCentred;
             Settings.CentreBody = d.CentreBody;
             Settings.SecondaryBody = d.SecondaryBody;
-            Settings.StartupChecks = d.StartupChecks;
             Settings.WindowEnabled = d.WindowEnabled;
             Settings.WindowAlwaysOnTop = d.WindowAlwaysOnTop;
             Settings.WindowLocked = d.WindowLocked;

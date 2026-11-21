@@ -381,7 +381,6 @@ internal static class SettingsWindow
     {
         Section("Diagnostics");
         ImGui.Checkbox("Show KSA's patched conics", ref Settings.ShowKsaConics);
-        ImGui.Checkbox("Check KSA's frames at the next launch", ref Settings.StartupChecks);
         ImGui.TextDisabled("Logs to mods/PrincipiaKSA/PrincipiaKSA.log");
     }
 

@@ -26,7 +26,7 @@ internal static class Clock
 internal static class FrameProfiler
 {
     // A frame is a stutter from this long, and this many times the usual.
-    private const double StutterMs = 40;
+    private const double StutterMs = 80;
     private const double StutterFactor = 3;
     // At most one report this often; the slow frames between are counted.
     private static readonly long ReportInterval = Stopwatch.Frequency;

@@ -440,7 +440,7 @@ fn buildProtoc(b: *Build, s: *const Sources, platform: Platform) *Build.Step.Com
 }
 
 // Principia's core (astronomy, base, geometry, numerics, physics and the
-// serialization sources) with its dependencies, for the AVX/FMA target.
+// serialization sources) with its dependencies, for the AVX/FMA (or Apple Silicon) target.
 fn principiaCore(
     b: *Build,
     s: *const Sources,
