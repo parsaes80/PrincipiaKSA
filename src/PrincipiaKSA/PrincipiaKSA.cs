@@ -3,6 +3,7 @@ using System.Reflection.Emit;
 using HarmonyLib;
 using KSA;
 using StarMap.API;
+using StarMap.API.Services;
 
 namespace PrincipiaKSA;
 
@@ -13,6 +14,11 @@ public class PrincipiaKSA
     public const string HarmonyId = "principia.ksa";
 
     private Harmony? _harmony;
+    private readonly IModMenuService _modMenu;
+    private IDisposable? _modMenuItem;
+
+    // StarMap passes its services to the constructor.
+    public PrincipiaKSA(IModMenuService modMenu) => _modMenu = modMenu;
 
     [StarMapImmediateLoad]
     public void Init(Mod definingMod)
@@ -52,6 +58,16 @@ public class PrincipiaKSA
         {
             Log.Info($"  patched {method.DeclaringType?.Name}.{method.Name}");
         }
+
+        // StarMap's Mods menu in KSA's top bar shows or hides the window.
+        try
+        {
+            _modMenuItem = _modMenu.AddModMenuItem("PrincipiaKSA", () => Settings.WindowEnabled = !Settings.WindowEnabled);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"PrincipiaKSA not added to StarMap's Mods menu: {e.Message}");
+        }
     }
 
     [StarMapUnload]
@@ -61,6 +77,7 @@ public class PrincipiaKSA
         {
             return;  // Disabled in Init: nothing was loaded.
         }
+        _modMenuItem?.Dispose();
         Predictor.Stop();
         SettingsStore.Save();
         _harmony?.UnpatchAll(HarmonyId);

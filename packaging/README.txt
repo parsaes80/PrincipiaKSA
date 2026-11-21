@@ -2,7 +2,7 @@ PrincipiaKSA: Principia's n-body gravity for Kitten Space Agency
 (Linux and Windows x64, Apple Silicon; the version is in VERSION)
 https://github.com/parsaes80/PrincipiaKSA
 
-Requires StarMap (KSA's mod loader), 0.4.8 or later, and a CPU with AVX and
+Requires StarMap (KSA's mod loader), 0.5.0 or later, and a CPU with AVX and
 FMA (Intel Haswell / AMD Zen or later) or Apple Silicon; on others the mod
 disables itself.
 

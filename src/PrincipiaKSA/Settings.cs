@@ -57,8 +57,8 @@ internal static class Settings
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For BarycentricRotating; null: automatic.
 
-    // The window, as KSA's panels (right click on it): shown (else listed
-    // unchecked in KSA's HUD menu), always on top (when detached), locked
+    // The window, as KSA's panels (right click on it): shown (else brought
+    // back from StarMap's Mods menu), always on top (when detached), locked
     // (no moving or resizing), detached (its own OS window).
     public static bool WindowEnabled = true;
     public static bool WindowAlwaysOnTop = true;

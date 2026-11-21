@@ -28,7 +28,7 @@ internal static class SettingsWindow
         }
         if (!Settings.WindowEnabled)
         {
-            return;  // Back from KSA's HUD menu (HudMenuPatch).
+            return;  // Back from StarMap's Mods menu.
         }
         float scale = GameSettings.GetInterfaceScale();
         ImGuiViewportPtr viewport = ImGui.GetMainViewport();
@@ -458,28 +458,6 @@ internal static class WindowPatch
         catch (Exception e)
         {
             Log.WarnOnce("[window] drawing the PrincipiaKSA window", e);
-        }
-    }
-}
-
-// KSA's HUD menu lists its panels to show or hide them (GaugeCanvas):
-// PrincipiaKSA's window too, so that one hidden with "Enabled" comes back.
-[HarmonyPatch(typeof(GaugeCanvas), nameof(GaugeCanvas.OnDrawMenuBar))]
-internal static class HudMenuPatch
-{
-    [HarmonyPostfix]
-    private static void Postfix()
-    {
-        try
-        {
-            if (ImGui.MenuItem("PrincipiaKSA"u8, default, Settings.WindowEnabled))
-            {
-                Settings.WindowEnabled = !Settings.WindowEnabled;
-            }
-        }
-        catch (Exception e)
-        {
-            Log.WarnOnce("[window] PrincipiaKSA in KSA's HUD menu", e);
         }
     }
 }
