@@ -45,7 +45,12 @@ internal static class SettingsWindow
         {
             return;  // Collapsed or hidden: ImGui's End is already called.
         }
+        // As KSA's gauge panels (GaugeCanvas): the contents shrink with the window. Test feature, uncomment to add
+        // float2 size = ImGui.GetWindowSize();
+        // float2 initial = InitialSize * scale;
+        // float fit = Math.Clamp(Math.Min(size.X / initial.X, size.Y / initial.Y), 0.6f, 1f);
         ConsoleStyle.BeginBody();
+        // ConsoleStyle.BeginGaugeHostScope(scale * fit);
         ConsoleStyle.PushWidgetStyle();
         WindowMenu("##PrincipiaKSA body menu");
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -59,6 +64,7 @@ internal static class SettingsWindow
             DrawDiagnostics();
         }
         ConsoleStyle.PopWidgetStyle();
+        //ConsoleStyle.EndGaugeHostScope();
         ConsoleStyle.EndBody();
         // Right click on the title bar or footer too.
         ConsoleStyle.PushWidgetStyle();
