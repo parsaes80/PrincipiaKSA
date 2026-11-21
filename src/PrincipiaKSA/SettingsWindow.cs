@@ -208,6 +208,7 @@ internal static class SettingsWindow
         if (Settings.Frame == PlotFrame.BarycentricRotating)
         {
             BodyCombo(system, "With", ref Settings.SecondaryBody, "Automatic (largest moon or parent)");
+            ImGui.Checkbox("Show Lagrange points", ref Settings.ShowLagrangePoints);
         }
         if (Predictor.PredictionFor(Program.ControlledVehicle) is { } p)
         {

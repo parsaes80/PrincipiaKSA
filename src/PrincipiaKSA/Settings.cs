@@ -53,6 +53,7 @@ internal static class Settings
     public static bool ShowKsaConics = false;
 
     public static PlotFrame Frame = PlotFrame.BodyCentred;
+    public static bool ShowLagrangePoints = true;  // In the two-body rotating frame.
 
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For BarycentricRotating; null: automatic.

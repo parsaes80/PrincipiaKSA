@@ -107,6 +107,39 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
         double3 y = double3.Cross(z, x);
         return (origin, x, y, z);
     }
+
+    // L1–L5 (circular restricted three-body, at the present distance); L2 beyond the lighter body, L4 ahead of it.
+    public static double3[] LagrangePoints(double mu1, double mu2, double distance)
+    {
+        // In units of the distance: the centre at −m, the secondary at 1 − m.
+        double m = mu2 / (mu1 + mu2);
+        double light = m <= 0.5 ? 1 - m : -m, heavy = m <= 0.5 ? -m : 1 - m;
+        double towardsLight = Math.Sign(light - heavy);
+        double Collinear(double a, double b)
+        {
+            // Net acceleration on the x axis grows with x between the bodies' singularities.
+            double lo = Math.Min(a, b), hi = Math.Max(a, b);
+            for (int i = 0; i < 200 && hi - lo > 1e-15; i++)
+            {
+                double x = 0.5 * (lo + hi), d1 = x + m, d2 = x - 1 + m;
+                double f = x - (1 - m) * d1 / Math.Pow(Math.Abs(d1), 3) - m * d2 / Math.Pow(Math.Abs(d2), 3);
+                (lo, hi) = f < 0 ? (x, hi) : (lo, x);
+            }
+            return 0.5 * (lo + hi);
+        }
+        double l1 = Collinear(heavy, light);
+        double l2 = Collinear(light, light + 2 * towardsLight);
+        double l3 = Collinear(heavy - 2 * towardsLight, heavy);
+        double side = towardsLight * Math.Sqrt(3) / 2;
+        return
+        [
+            new double3(l1, 0, 0) * distance,
+            new double3(l2, 0, 0) * distance,
+            new double3(l3, 0, 0) * distance,
+            new double3(0.5 - m, side, 0) * distance,
+            new double3(0.5 - m, -side, 0) * distance,
+        ];
+    }
 }
 
 // Maps a plotting frame's coordinates to Ecl positions now: about each body

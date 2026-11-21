@@ -15,6 +15,7 @@ internal static class MapColors
     public static readonly byte4 Apsis = new(90, 220, 255, 255);
     public static readonly byte4 Approach = new(255, 90, 220, 255);
     public static readonly byte4 Impact = new(255, 60, 60, 255);
+    public static readonly byte4 Lagrange = new(255, 150, 40, 255);
 
     // The prediction orange, then one colour per burn, cycling after ten: hues
     // at least 80° apart from one segment to the next, as saturated as sRGB
@@ -339,13 +340,64 @@ internal static class MapOverlay
             return;
         }
         Vehicle? vehicle = Program.ControlledVehicle;
-        if (Predictor.PredictionFor(vehicle) is { } prediction)
+        Prediction? prediction = Predictor.PredictionFor(vehicle), plan = Predictor.PlanFor(vehicle);
+        if (Settings.ShowLagrangePoints &&
+            (prediction ?? plan)?.Frame is { Kind: PlotFrame.BarycentricRotating } frame)
+        {
+            DrawLagrangePoints(viewport, frame);
+        }
+        if (prediction != null)
         {
             DrawMarkers(viewport, prediction);
         }
-        if (Predictor.PlanFor(vehicle) is { } plan)
+        if (plan != null)
         {
             DrawMarkers(viewport, plan);
+        }
+    }
+
+    private static readonly string[] LagrangeNames = ["L1", "L2", "L3", "L4", "L5"];
+
+    // The two bodies' Lagrange points, where they stand still: in the two-body rotating frame.
+    private static void DrawLagrangePoints(IGameViewport viewport, FrameSpec frame)
+    {
+        Astronomical centre = frame.Centre, secondary = frame.Secondary!;
+        double3 centreEcl = centre.GetPositionEcl(), secondaryEcl = secondary.GetPositionEcl();
+        double3[] points = FrameSpec.LagrangePoints(((IParentBody)centre).Mu, ((IParentBody)secondary).Mu,
+                                                    (secondaryEcl - centreEcl).Length());
+        var mapper = new FrameMapper(frame);
+        Camera camera = viewport.GetCamera();
+        ImDrawListPtr drawList = ImGuiHelper.GetOverlayDrawList(viewport);
+        float2 origin = viewport.Position;
+        float2 mouse = Cursor.GetPosition(viewport);
+        byte4 c = MapColors.Lagrange;
+        Span<char> buffer = stackalloc char[128];
+        for (int i = 0; i < points.Length; i++)
+        {
+            double3 ecl = mapper.ToEcl(points[i]);
+            if (Occluded(camera, ecl))
+            {
+                continue;
+            }
+            float2 at = camera.EclToScreen(ecl);
+            if (float.IsNaN(at.X) || float.IsNaN(at.Y))
+            {
+                continue;
+            }
+            float2 p = origin + at;
+            ImGuiHelper.DrawMarkerDot(drawList, p, c);
+            ImGuiHelper.DrawTextOnScreen(drawList, p, LagrangeNames[i], c);
+            if (float2.Distance(at, mouse) < 12)
+            {
+                // Hovered: whose point it is, and how far from the nearer body.
+                double toCentre = (ecl - centreEcl).Length(), toSecondary = (ecl - secondaryEcl).Length();
+                (double distance, string body) = toCentre < toSecondary ? (toCentre, centre.Id) : (toSecondary, secondary.Id);
+                float line = ImGui.GetTextLineHeight();
+                ImGuiHelper.DrawTextOnScreen(drawList, p + new float2(0, line),
+                                             $"{centre.Id}–{secondary.Id} {LagrangeNames[i]}", c);
+                ImGuiHelper.DrawTextOnScreen(drawList, p + new float2(0, 2 * line),
+                                             $"{new string(DistanceReference.ToNearest(distance, buffer))} from {body}", c);
+            }
         }
     }
 
