@@ -55,7 +55,7 @@ internal static class Settings
     public static PlotFrame Frame = PlotFrame.BodyCentred;  // BarycentricRotating is "Two body".
     public static bool TwoBodyCentred = false;      // "Two body" about the centre body, not the barycentre.
     public static bool ShowLagrangePoints = true;   // In the "Two body" frame.
-    public static bool BurnArrowsInFrame = false;   // Node arrows along the plotting frame's axes (BurnArrows.cs).
+    public static bool BurnArrowsInFrame = false;   // Node arrows along the plotting frame's axes (BurnAxes, Nodes.cs).
 
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For "Two body"; null: automatic.
