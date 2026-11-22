@@ -214,6 +214,8 @@ internal static class SettingsWindow
                            ref Settings.TwoBodyCentred);
             ImGui.Checkbox("Show Lagrange points", ref Settings.ShowLagrangePoints);
         }
+        // KSA's node arrows along this frame's prograde/normal/outward, with KSA's own shown faintly.
+        ImGui.Checkbox("Burn arrows follow the plotting frame", ref Settings.BurnArrowsInFrame);
         if (p != null)
         {
             ImGui.TextDisabled($"Drawn {p.Frame.Describe()}");

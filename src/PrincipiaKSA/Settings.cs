@@ -55,6 +55,7 @@ internal static class Settings
     public static PlotFrame Frame = PlotFrame.BodyCentred;  // BarycentricRotating is "Two body".
     public static bool TwoBodyCentred = false;      // "Two body" about the centre body, not the barycentre.
     public static bool ShowLagrangePoints = true;   // In the "Two body" frame.
+    public static bool BurnArrowsInFrame = false;   // Node arrows along the plotting frame's axes (BurnArrows.cs).
 
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For "Two body"; null: automatic.
@@ -84,6 +85,7 @@ internal static class SettingsStore
         public string? CentreBody { get; set; } = Settings.CentreBody;
         public string? SecondaryBody { get; set; } = Settings.SecondaryBody;
         public bool TwoBodyCentred { get; set; } = Settings.TwoBodyCentred;
+        public bool BurnArrowsInFrame { get; set; } = Settings.BurnArrowsInFrame;
         public bool WindowEnabled { get; set; } = Settings.WindowEnabled;
         public bool WindowAlwaysOnTop { get; set; } = Settings.WindowAlwaysOnTop;
         public bool WindowLocked { get; set; } = Settings.WindowLocked;
@@ -118,6 +120,7 @@ internal static class SettingsStore
             Settings.CentreBody = d.CentreBody;
             Settings.SecondaryBody = d.SecondaryBody;
             Settings.TwoBodyCentred = d.TwoBodyCentred;
+            Settings.BurnArrowsInFrame = d.BurnArrowsInFrame;
             Settings.WindowEnabled = d.WindowEnabled;
             Settings.WindowAlwaysOnTop = d.WindowAlwaysOnTop;
             Settings.WindowLocked = d.WindowLocked;

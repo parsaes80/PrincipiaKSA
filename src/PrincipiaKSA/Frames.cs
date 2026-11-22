@@ -82,27 +82,75 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
             case PlotFrame.BarycentricRotating:
             case PlotFrame.BodyDirection:
             {
-                QP secondary = ephemeris.State(frame.SecondaryIndex, t);
-                double mu1 = ((IParentBody)frame.Centre).Mu, mu2 = ((IParentBody)frame.Secondary!).Mu;
-                double3 q1 = centre.Q.ToDouble3(), v1 = centre.P.ToDouble3();
-                double3 q2 = secondary.Q.ToDouble3(), v2 = secondary.P.ToDouble3();
-                (double3 origin, double3 x, double3 y, double3 z) = RotatingAxes(mu1, q1, v1, mu2, q2, v2);
-                double3 vOrigin = (mu1 * v1 + mu2 * v2) / (mu1 + mu2);
-                if (frame.Kind == PlotFrame.BodyDirection)
-                {
-                    (origin, vOrigin) = (q1, v1);
-                }
+                var (origin, vOrigin, x, y, z, rate) = RotatingAt(ephemeris, t, centre);
                 double3 d = q - origin, dv = v - vOrigin;
                 var c = new double3(double3.Dot(d, x), double3.Dot(d, y), double3.Dot(d, z));
                 var cv = new double3(double3.Dot(dv, x), double3.Dot(dv, y), double3.Dot(dv, z));
-                // The axes turn about z at the pair's orbital rate.
-                double3 r12 = q2 - q1;
-                double rate = double3.Cross(r12, v2 - v1).Length() / double3.Dot(r12, r12);
                 return (c, cv - double3.Cross(new double3(0, 0, rate), c));
             }
             default:
                 return (rel, relV);
         }
+    }
+
+    // The "Two body" frame at t (`centre`: the centre's state then): origin, its velocity, axes, and the rate they turn about z.
+    private (double3 Origin, double3 VOrigin, double3 X, double3 Y, double3 Z, double Rate) RotatingAt(
+        Ephemeris ephemeris, double t, QP centre)
+    {
+        QP secondary = ephemeris.State(SecondaryIndex, t);
+        double mu1 = ((IParentBody)Centre).Mu, mu2 = ((IParentBody)Secondary!).Mu;
+        double3 q1 = centre.Q.ToDouble3(), v1 = centre.P.ToDouble3();
+        double3 q2 = secondary.Q.ToDouble3(), v2 = secondary.P.ToDouble3();
+        (double3 origin, double3 x, double3 y, double3 z) = RotatingAxes(mu1, q1, v1, mu2, q2, v2);
+        double3 vOrigin = (mu1 * v1 + mu2 * v2) / (mu1 + mu2);
+        if (Kind == PlotFrame.BodyDirection)
+        {
+            (origin, vOrigin) = (q1, v1);
+        }
+        double3 r12 = q2 - q1;
+        double rate = double3.Cross(r12, v2 - v1).Length() / double3.Dot(r12, r12);
+        return (origin, vOrigin, x, y, z, rate);
+    }
+
+    // An absolute state's velocity at t as seen in this frame, in Ecl axes (Coordinates' velocity, not turned).
+    public double3 FrameVelocity(Ephemeris ephemeris, double t, QP state)
+    {
+        QP centre = ephemeris.State(CentreIndex, t);
+        double3 q = state.Q.ToDouble3(), v = state.P.ToDouble3();
+        switch (Kind)
+        {
+            case PlotFrame.BodySurface:
+            {
+                double3 axis = double3.UnitZ.Transform(
+                    ((IParentBody)Centre).GetCcf2Cce(GameTime.FromSecondsSinceJ2000(t)));
+                double omega = Centre is Celestial celestial ? celestial.GetAngularVelocity() : 0;
+                return v - centre.P.ToDouble3() - double3.Cross(omega * axis, q - centre.Q.ToDouble3());
+            }
+            case PlotFrame.BarycentricRotating:
+            case PlotFrame.BodyDirection:
+            {
+                var (origin, vOrigin, _, _, z, rate) = RotatingAt(ephemeris, t, centre);
+                return v - vOrigin - double3.Cross(rate * z, q - origin);
+            }
+            default:
+                return v - centre.P.ToDouble3();
+        }
+    }
+
+    // A direction in Ecl axes at t, turned as the map draws that moment now (`now`: this frame's mapper).
+    public double3 DirectionNow(Ephemeris ephemeris, double t, double3 d, in FrameMapper now)
+    {
+        double3 c = d;
+        if (Kind == PlotFrame.BodySurface)
+        {
+            c = d.Transform(((IParentBody)Centre).GetCce2Ccf(GameTime.FromSecondsSinceJ2000(t)));
+        }
+        else if (Kind is PlotFrame.BarycentricRotating or PlotFrame.BodyDirection)
+        {
+            var (_, _, x, y, z, _) = RotatingAt(ephemeris, t, ephemeris.State(CentreIndex, t));
+            c = new double3(double3.Dot(d, x), double3.Dot(d, y), double3.Dot(d, z));
+        }
+        return now.ToEcl(c) - now.ToEcl(double3.Zero);
     }
 
     // The two-body rotating frame's origin (the pair's barycentre) and axes.
