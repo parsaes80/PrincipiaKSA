@@ -1,7 +1,8 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Brutal.ImGuiApi;
 using Brutal.Numerics;
 using HarmonyLib;
 using KSA;
@@ -9,8 +10,8 @@ using KSA;
 namespace PrincipiaKSA;
 
 // Maneuver nodes on Principia's lines: where a node is drawn and how it is
-// dragged (BurnNode), and why, in the log (NodeDiagnostics); its arrows in the
-// plotting frame (BurnAxes).
+// dragged (BurnNode), and why, in the log (NodeDiagnostics); its arrows and Δv
+// fields in the plotting frame (BurnAxes).
 
 // Maneuver nodes on Principia's lines. KSA draws a node at its patch's conic
 // at the burn time and drags it along that conic, which far ahead can be
@@ -501,17 +502,16 @@ internal static class BurnGizmoDiagnosticsPatch
     }
 }
 
-// "Burn arrows follow the plotting frame": KSA's node arrows turn to the frame's prograde/normal/outward, their
-// drags are converted to KSA's axes (the burn's Δv stays KSA's), and faint lines show KSA's own directions.
+// A node's prograde/normal/outward in the plotting frame (arrows, drags, KSA's burn fields and buttons); Δv stays KSA's.
 
 internal static class BurnAxes
 {
-    // A burn's axes (x prograde, y normal, z outward) to Cce: KSA's and the frame's at the burn, and both as drawn now.
-    internal readonly record struct Axes(doubleQuat Ksa, doubleQuat Frame, doubleQuat KsaShown, doubleQuat FrameShown);
+    // A burn's axes (x prograde, y normal, z outward) to Cce: KSA's and the frame's at the burn, and the frame's as drawn now.
+    internal readonly record struct Axes(doubleQuat Ksa, doubleQuat Frame, doubleQuat FrameShown);
 
     public static Axes? Of(Burn burn)
     {
-        if (!Settings.BurnArrowsInFrame || burn.ParentDepartureBurn || burn.Vehicle is not { } vehicle ||
+        if (burn.ParentDepartureBurn || burn.Vehicle is not { } vehicle ||
             !KsaConics.Hidden(vehicle) || PrincipiaSystem.Current is not { Failed: false } system ||
             (Predictor.PlanFor(vehicle) ?? Predictor.PredictionFor(vehicle))?.Line is not { Stretches.Length: > 0 } line)
         {
@@ -543,25 +543,23 @@ internal static class BurnAxes
         {
             return null;
         }
-        doubleQuat Shown(doubleQuat q)
-        {
-            double3 x = frame.DirectionNow(ephemeris, t, double3.UnitX.Transform(q), now);
-            double3 y = frame.DirectionNow(ephemeris, t, double3.UnitY.Transform(q), now);
-            double3 z = frame.DirectionNow(ephemeris, t, double3.UnitZ.Transform(q), now);
-            return doubleQuat.CreateFromRotationMatrix(new double4x4(x.X, x.Y, x.Z, 0, y.X, y.Y, y.Z, 0,
-                                                                      z.X, z.Y, z.Z, 0, 0, 0, 0, 1));
-        }
-        return new Axes(ksa, axes, Shown(ksa), Shown(axes));
+        double3 x = frame.DirectionNow(ephemeris, t, double3.UnitX.Transform(axes), now);
+        double3 y = frame.DirectionNow(ephemeris, t, double3.UnitY.Transform(axes), now);
+        double3 z = frame.DirectionNow(ephemeris, t, double3.UnitZ.Transform(axes), now);
+        doubleQuat shown = doubleQuat.CreateFromRotationMatrix(new double4x4(x.X, x.Y, x.Z, 0, y.X, y.Y, y.Z, 0,
+                                                                              z.X, z.Y, z.Z, 0, 0, 0, 0, 1));
+        return new Axes(ksa, axes, shown);
     }
 
     // A Δv along the frame's axes, in KSA's.
-    public static double3 ToKsa(in Axes axes, double3 inFrame)
-    {
-        double3 cce = inFrame.Transform(axes.Frame);
-        return new double3(double3.Dot(cce, double3.UnitX.Transform(axes.Ksa)),
-                           double3.Dot(cce, double3.UnitY.Transform(axes.Ksa)),
-                           double3.Dot(cce, double3.UnitZ.Transform(axes.Ksa)));
-    }
+    public static double3 ToKsa(in Axes axes, double3 inFrame) => Along(inFrame.Transform(axes.Frame), axes.Ksa);
+
+    // A Δv along KSA's axes, in the frame's.
+    public static double3 FromKsa(in Axes axes, double3 inKsa) => Along(inKsa.Transform(axes.Ksa), axes.Frame);
+
+    private static double3 Along(double3 cce, doubleQuat axes) =>
+        new(double3.Dot(cce, double3.UnitX.Transform(axes)), double3.Dot(cce, double3.UnitY.Transform(axes)),
+            double3.Dot(cce, double3.UnitZ.Transform(axes)));
 }
 
 // KSA turns a node's sphere and arrows by its axes at the burn (GetVlf2ParentCce): the frame's instead, as drawn now.
@@ -631,62 +629,184 @@ internal static class BurnArrowDragPatch
     }
 }
 
-// Faint lines along KSA's own prograde (red), normal (green) and outward (blue) at the active node.
-[HarmonyPatch(typeof(Universe), nameof(Universe.OnDrawUi))]
-internal static class KsaBurnDirections
+// KSA's burn editor and HUD burn panel fields read and write Burn.DeltaVVlf: they show and take the frame's components.
+[HarmonyPatch]
+internal static class BurnFieldsPatch
 {
-    private static readonly byte4[] Colors = [new(255, 70, 70, 110), new(70, 255, 70, 110), new(90, 90, 255, 110)];
+    private static readonly FieldInfo DeltaV = AccessTools.Field(typeof(Burn), nameof(Burn.DeltaVVlf));
 
-    private static readonly AccessTools.FieldRef<Burn, GenericGizmo> Cone =
-        AccessTools.FieldRefAccess<Burn, GenericGizmo>("ConeGizmo");
+    // The frame's components, for the field reads (one burn at a time, on the UI thread).
+    private static double3 _shown;
 
-    [HarmonyPostfix]
-    private static void Postfix(IGameViewport inViewport)
+    [HarmonyTargetMethods]
+    private static IEnumerable<MethodBase> TargetMethods() =>
+    [
+        AccessTools.Method(typeof(Burn), nameof(Burn.DrawBurnEditorWindowContent)),
+        AccessTools.Method(typeof(BurnCanvasHost), nameof(BurnCanvasHost.Draw)),
+    ];
+
+    [HarmonyTranspiler]
+    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
     {
-        try
+        int replaced = 0;
+        foreach (CodeInstruction instruction in instructions)
         {
-            Draw(inViewport);
+            MethodInfo? to = !Equals(instruction.operand, DeltaV) ? null
+                : instruction.opcode == OpCodes.Ldflda ? AccessTools.Method(typeof(BurnFieldsPatch), nameof(Shown))
+                : instruction.opcode == OpCodes.Ldfld ? AccessTools.Method(typeof(BurnFieldsPatch), nameof(ShownValue))
+                : instruction.opcode == OpCodes.Stfld ? AccessTools.Method(typeof(BurnFieldsPatch), nameof(Enter))
+                : null;
+            if (to != null)
+            {
+                instruction.opcode = OpCodes.Call;
+                instruction.operand = to;
+                replaced++;
+            }
+            yield return instruction;
         }
-        catch (Exception e)
+        if (replaced == 0)
         {
-            Log.WarnOnce("[burn arrows] drawing KSA's directions", e);
+            Log.Warn($"[burn arrows] {original.DeclaringType?.Name}.{original.Name} no longer uses Burn.DeltaVVlf; " +
+                     "its fields stay in KSA's axes");
         }
     }
 
-    private static void Draw(IGameViewport viewport)
+    private static ref double3 Shown(Burn burn)
     {
-        if (!Settings.BurnArrowsInFrame || viewport.Mode != CameraMode.Map || Program.ControlledVehicle is not { } vehicle)
+        try
         {
-            return;
-        }
-        Camera camera = viewport.GetCamera();
-        ImDrawListPtr drawList = ImGuiHelper.GetOverlayDrawList(viewport);
-        float2 origin = viewport.Position;
-        foreach (Burn burn in vehicle.BurnPlan.All())
-        {
-            if (!burn.IsGizmoActive || BurnAxes.Of(burn) is not { } axes)
+            if (BurnAxes.Of(burn) is { } axes)
             {
-                continue;
+                _shown = BurnAxes.FromKsa(axes, burn.DeltaVVlf);
+                return ref _shown;
             }
-            double3 at = burn.Patch.Orbit.Parent.GetPositionEclFromCce(BurnNode.PositionCce(burn));
-            // As far out as KSA's cones (Burn.UpdateGizmos), and a little beyond.
-            double reach = 3 * Cone(burn).Mesh.BoundingSphereRadius * 0.03 * camera.EclToEgo(at).Length();
-            double3[] directions =
-            [
-                double3.UnitX.Transform(axes.KsaShown),
-                double3.UnitY.Transform(axes.KsaShown),
-                double3.UnitZ.Transform(axes.KsaShown),
-            ];
-            for (int i = 0; i < directions.Length; i++)
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[burn arrows] showing a burn in the frame", e);
+        }
+        return ref burn.DeltaVVlf;
+    }
+
+    private static double3 ShownValue(Burn burn) => Shown(burn);
+
+    private static void Enter(Burn burn, double3 inFrame)
+    {
+        try
+        {
+            if (BurnAxes.Of(burn) is { } axes)
             {
-                float2 a = camera.EclToScreen(at - directions[i] * reach);
-                float2 b = camera.EclToScreen(at + directions[i] * reach);
-                if (float.IsNaN(a.X) || float.IsNaN(a.Y) || float.IsNaN(b.X) || float.IsNaN(b.Y))
+                burn.DeltaVVlf = BurnAxes.ToKsa(axes, inFrame);
+                return;
+            }
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[burn arrows] entering a burn in the frame", e);
+        }
+        burn.DeltaVVlf = inFrame;
+    }
+}
+
+// KSA's HUD burn buttons add a step along prograde/normal/outward (GaugeButtonBurn.ApplyDeltaV): the frame's.
+[HarmonyPatch(typeof(GaugeButtonBurn), nameof(GaugeButtonBurn.OnActivated))]
+internal static class BurnButtonsPatch
+{
+    private static readonly Action<Burn, FlightComputer, double, double, double> Apply =
+        AccessTools.MethodDelegate<Action<Burn, FlightComputer, double, double, double>>(
+            AccessTools.Method(typeof(GaugeButtonBurn), "ApplyDeltaV"));
+
+    [HarmonyTranspiler]
+    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) =>
+        Patching.ReplaceCalls(instructions, "[burn arrows] GaugeButtonBurn.OnActivated no longer calls ApplyDeltaV; " +
+                              "the HUD burn buttons stay in KSA's axes", 6,
+            (AccessTools.Method(typeof(GaugeButtonBurn), "ApplyDeltaV"),
+             AccessTools.Method(typeof(BurnButtonsPatch), nameof(ApplyDeltaV))));
+
+    private static void ApplyDeltaV(Burn burn, FlightComputer fc, double x, double y, double z)
+    {
+        try
+        {
+            if (BurnAxes.Of(burn) is { } axes)
+            {
+                double3 ksa = BurnAxes.ToKsa(axes, new double3(x, y, z));
+                (x, y, z) = (ksa.X, ksa.Y, ksa.Z);
+            }
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[burn arrows] converting a burn button", e);
+        }
+        Apply(burn, fc, x, y, z);
+    }
+}
+
+// A node moved in time (drag, ±period, Time fields or buttons) keeps its Δv along the frame's axes, not KSA's.
+[HarmonyPatch(typeof(InputEvents), nameof(InputEvents.ApplyInputEvents))]
+internal static class BurnMovePatch
+{
+    // The controlled vessel's burns as KSA last applied them: time and Δv. UI thread.
+    private static readonly ConditionalWeakTable<Burn, StrongBox<(UniverseTime Time, double3 DeltaV)>> Applied = new();
+
+    [HarmonyPrefix]
+    private static void Prefix()
+    {
+        try
+        {
+            // Every move queues a burn update: one whose time changed with its Δv untouched was moved.
+            foreach (InputEvents.BurnUpdateData update in InputEvents.BurnUpdateBuffer.Get())
+            {
+                if (update.Burn is { } burn && !update.AddBurn && !update.DeleteBurn &&
+                    Applied.TryGetValue(burn, out var last) && last.Value.Time != burn.Time &&
+                    last.Value.DeltaV.Equals(burn.DeltaVVlf))
                 {
-                    continue;
+                    burn.DeltaVVlf = Moved(burn, last.Value.Time);
+                    last.Value = (burn.Time, burn.DeltaVVlf);
                 }
-                drawList.AddLine(origin + a, origin + b, Colors[i]);
             }
         }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[burn arrows] keeping a moved burn in the frame", e);
+        }
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix()
+    {
+        try
+        {
+            if (Program.ControlledVehicle is not { } vehicle)
+            {
+                return;
+            }
+            foreach (Burn burn in vehicle.BurnPlan.All())
+            {
+                Applied.AddOrUpdate(burn, new((burn.Time, burn.DeltaVVlf)));
+            }
+        }
+        catch (Exception e)
+        {
+            Log.WarnOnce("[burn arrows] noting the burns", e);
+        }
+    }
+
+    // The burn's Δv in the frame's axes at `from`, in KSA's at its time now.
+    private static double3 Moved(Burn burn, UniverseTime from)
+    {
+        UniverseTime to = burn.Time;
+        BurnAxes.Axes? before;
+        burn.Time = from;
+        try
+        {
+            before = BurnAxes.Of(burn);
+        }
+        finally
+        {
+            burn.Time = to;
+        }
+        return before is { } a && BurnAxes.Of(burn) is { } b
+            ? BurnAxes.ToKsa(b, BurnAxes.FromKsa(a, burn.DeltaVVlf))
+            : burn.DeltaVVlf;
     }
 }
