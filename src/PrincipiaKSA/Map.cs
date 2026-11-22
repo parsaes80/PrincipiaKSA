@@ -461,8 +461,8 @@ internal static class MapOverlay
                                          Format.Countdown(time - now), c);
         }
 
-        // Only the next Pe and Ap, and every burn and closest approach.
-        bool nextPe = false, nextAp = false;
+        // Only the next Pe, Ap, aN and dN, and every burn and closest approach.
+        bool nextPe = false, nextAp = false, nextAn = false, nextDn = false;
         foreach (var marker in prediction.Markers)
         {
             if (marker.Time < now)
@@ -479,6 +479,16 @@ internal static class MapOverlay
                 if (nextAp) continue;
                 nextAp = true;
             }
+            else if (marker.Kind == Prediction.MarkerKind.AscendingNode)
+            {
+                if (nextAn) continue;
+                nextAn = true;
+            }
+            else if (marker.Kind == Prediction.MarkerKind.DescendingNode)
+            {
+                if (nextDn) continue;
+                nextDn = true;
+            }
             if (Screen(mappers[marker.Stretch].ToEcl(marker.Position)) is not { } at)
             {
                 continue;
@@ -494,7 +504,8 @@ internal static class MapOverlay
                 _ => MapColors.Apsis,
             };
             Draw(at, color, marker.Name, marker.Time, marker.Altitude, marker.Detail,
-                 apsis: marker.Kind is Prediction.MarkerKind.Periapsis or Prediction.MarkerKind.Apoapsis);
+                 apsis: marker.Kind is Prediction.MarkerKind.Periapsis or Prediction.MarkerKind.Apoapsis
+                     or Prediction.MarkerKind.AscendingNode or Prediction.MarkerKind.DescendingNode);
         }
         int last = prediction.Times.Length - 1;
         if (prediction.Impact && last >= 0 && Screen(line.ToEcl(mappers, last)) is { } impact)

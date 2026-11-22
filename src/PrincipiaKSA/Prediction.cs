@@ -118,7 +118,7 @@ internal sealed class Prediction
 
     // Sphere: where the line leaves or enters a sphere of influence; Body:
     // where the body entered will be then.
-    public enum MarkerKind { Periapsis, Apoapsis, ClosestApproach, Burn, Sphere, Body }
+    public enum MarkerKind { Periapsis, Apoapsis, ClosestApproach, Burn, Sphere, Body, AscendingNode, DescendingNode }
 
     // An event at Time and Position, in the frame of stretch Stretch. Label
     // is the full text for lists; the map shows Name, and Altitude or Detail

@@ -290,21 +290,27 @@ internal static class BurnHoverPatch
     }
 }
 
-// The right-click menu's "At Periapsis" / "At Apoapsis", offered within
-// 44 px of the next Pe and Ap: Principia's markers and times, not the conic's.
+// The right-click menu's "At Periapsis" / "At Apoapsis" / "At Ascending Node" / "At Descending Node", offered
+// within 44 px of the next Pe, Ap, aN and dN: Principia's markers and times, not the conic's.
 [HarmonyPatch(typeof(BurnContextMenu), "ComputeSnapState")]
 internal static class BurnMenuSnapPatch
 {
-    private static readonly AccessTools.FieldRef<bool> NearPeriapsis =
-        AccessTools.StaticFieldRefAccess<bool>(AccessTools.Field(typeof(BurnContextMenu), "_burnMenuNearPeriapsis"));
-    private static readonly AccessTools.FieldRef<bool> NearApoapsis =
-        AccessTools.StaticFieldRefAccess<bool>(AccessTools.Field(typeof(BurnContextMenu), "_burnMenuNearApoapsis"));
-    private static readonly AccessTools.FieldRef<UniverseTime?> PeriapsisTime =
-        AccessTools.StaticFieldRefAccess<UniverseTime?>(
-            AccessTools.Field(typeof(BurnContextMenu), "_burnMenuPeriapsisTime"));
-    private static readonly AccessTools.FieldRef<UniverseTime?> ApoapsisTime =
-        AccessTools.StaticFieldRefAccess<UniverseTime?>(
-            AccessTools.Field(typeof(BurnContextMenu), "_burnMenuApoapsisTime"));
+    // KSA's menu state per feature: whether it is near, and when.
+    private static readonly (Prediction.MarkerKind Kind, AccessTools.FieldRef<bool> Near,
+                             AccessTools.FieldRef<UniverseTime?> Time)[] Features =
+    [
+        Feature(Prediction.MarkerKind.Periapsis, "Periapsis"),
+        Feature(Prediction.MarkerKind.Apoapsis, "Apoapsis"),
+        Feature(Prediction.MarkerKind.AscendingNode, "Ascending"),
+        Feature(Prediction.MarkerKind.DescendingNode, "Descending"),
+    ];
+
+    private static (Prediction.MarkerKind, AccessTools.FieldRef<bool>, AccessTools.FieldRef<UniverseTime?>) Feature(
+        Prediction.MarkerKind kind, string name) =>
+        (kind,
+         AccessTools.StaticFieldRefAccess<bool>(AccessTools.Field(typeof(BurnContextMenu), $"_burnMenuNear{name}")),
+         AccessTools.StaticFieldRefAccess<UniverseTime?>(
+             AccessTools.Field(typeof(BurnContextMenu), $"_burnMenu{name}Time")));
 
     [HarmonyPostfix]
     private static void Postfix(in CelestialPosition point, IViewport viewport)
@@ -316,8 +322,11 @@ internal static class BurnMenuSnapPatch
             {
                 return;
             }
-            NearPeriapsis() = NearApoapsis() = false;
-            PeriapsisTime() = ApoapsisTime() = null;
+            foreach (var feature in Features)
+            {
+                feature.Near() = false;
+                feature.Time() = null;
+            }
             Camera camera = viewport.GetCamera();
             float2 mouse = Cursor.GetPosition(viewport);
             double now = GameTime.Now;
@@ -333,17 +342,15 @@ internal static class BurnMenuSnapPatch
                 return;
             }
             FrameMapper[] mappers = line.Line.Mappers();
-            bool pe = false, ap = false;
+            var seen = new bool[Features.Length];
             foreach (Prediction.Marker m in line.Markers)
             {
-                bool isPe = m.Kind == Prediction.MarkerKind.Periapsis;
-                bool isAp = m.Kind == Prediction.MarkerKind.Apoapsis;
-                if (!(isPe || isAp) || m.Time < now || (isPe && pe) || (isAp && ap))
+                int f = Array.FindIndex(Features, x => x.Kind == m.Kind);
+                if (f < 0 || m.Time < now || seen[f])
                 {
                     continue;  // Only the next of each, as drawn.
                 }
-                pe |= isPe;
-                ap |= isAp;
+                seen[f] = true;
                 if (m.Time < start || m.Time > end ||
                     !(float2.Distance(mouse, camera.EclToScreen(mappers[m.Stretch].ToEcl(m.Position))) < 44f))
                 {
@@ -352,21 +359,13 @@ internal static class BurnMenuSnapPatch
                 UniverseTime time = GameTime.FromSecondsSinceJ2000(m.Time);
                 // KSA builds the menu's point at this time on its patch.
                 OrbitHover.Remember(patch, patch.Orbit.GetPointAt(time).PositionCce, time);
-                if (isPe)
-                {
-                    NearPeriapsis() = true;
-                    PeriapsisTime() = time;
-                }
-                else
-                {
-                    NearApoapsis() = true;
-                    ApoapsisTime() = time;
-                }
+                Features[f].Near() = true;
+                Features[f].Time() = time;
             }
         }
         catch (Exception e)
         {
-            Log.WarnOnce("[hover] burn menu Pe/Ap", e);
+            Log.WarnOnce("[hover] burn menu Pe/Ap/aN/dN", e);
         }
     }
 }

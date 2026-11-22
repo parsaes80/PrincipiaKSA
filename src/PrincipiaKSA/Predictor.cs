@@ -71,10 +71,28 @@ internal static class Predictor
                                   int[] ApsisBodies, Astronomical[] Candidates, long CoastSteps,
                                   double CoastTolerance, PlannedBurn[] Burns, EnginePhase[] Phases, double Mass,
                                   long PlanSteps, double PlanTolerance, NodeBurn[] Nodes, bool ShowPlan,
-                                  int ParentIndex, Astronomical Parent)
+                                  int ParentIndex, Astronomical Parent, TargetPlane? Target)
     {
         // When the vessel's state was taken (Stopwatch ticks).
         public long Requested { get; } = Stopwatch.GetTimestamp();
+    }
+
+    // The target's orbital plane about its parent, for the nodes (KSA's aN and dN): its unit normal in Ecl axes.
+    private sealed record TargetPlane(string Name, double3 Normal, int ParentIndex, Astronomical Parent);
+
+    // As KSA: nodes only with a target, on its plane about the body it orbits.
+    private static TargetPlane? PlaneOf(PrincipiaSystem system, Vehicle vehicle)
+    {
+        if (vehicle.Target is not { } target || target.Orbit is not { } orbit ||
+            orbit.Parent is not Astronomical parent || system.IndexOf(parent) is not int parentIndex)
+        {
+            return null;
+        }
+        double3 normal = orbit.GetOrbitNormalCci().Transform(orbit.Parent.GetCci2Cce());
+        double length = normal.Length();
+        return length > 0 && double.IsFinite(length)
+            ? new TargetPlane(target.Id, normal / length, parentIndex, parent)
+            : null;
     }
 
     // A planned burn as the flight computer will fly it: from Ignition, along
@@ -159,7 +177,7 @@ internal static class Predictor
             Settings.ShowPrediction ? Settings.PredictionSteps : 0, Settings.PredictionTolerance,
             Burns(vehicle, t), Phases(fc), fc.TotalMassPropsBody.Mass,
             Settings.PlanSteps, Settings.PlanTolerance, Nodes(vehicle, t), Settings.ShowFlightPlan,
-            parentIndex, parent));
+            parentIndex, parent, PlaneOf(system, vehicle)));
         CoastWorker.Wake();
         PlanWorker.Wake();
     }
@@ -484,6 +502,59 @@ internal static class Predictor
     // line wanting up to MaxSpan would integrate the planets twenty years.
     private static void WantPlanets(double reached, double wanted) =>
         PrincipiaSystem.Current?.Prolonger.Request(Math.Min(wanted, reached + PlanetRequestSeconds));
+
+    // Where the path crosses the target's plane while in its parent's sphere, and its inclination there (degrees).
+    private static List<(double Time, double3 Q, bool Ascending, double Inclination)> PlaneCrossings(
+        Ephemeris ephemeris, Line line, Trajectory trajectory, TargetPlane plane)
+    {
+        var nodes = new List<(double, double3, bool, double)>();
+        double3 n = plane.Normal;
+        int count = trajectory.Times.Count;
+        double[] times = new double[2];
+        QP[] about = new QP[2];
+        QP Relative(int i)
+        {
+            QP parent = ephemeris.State(plane.ParentIndex, trajectory.Times[i]);
+            return new QP(trajectory.States[i].Q.ToDouble3() - parent.Q.ToDouble3(),
+                          trajectory.States[i].P.ToDouble3() - parent.P.ToDouble3());
+        }
+        bool InParentSphere(double t) => line.Stretches.Length > 0 && line.Stretches[line.StretchAt(t)].Body == plane.Parent;
+        double previous = double.NaN;
+        QP previousState = default;
+        for (int i = 0; i < count; i++)
+        {
+            double t = trajectory.Times[i];
+            if (!InParentSphere(t))
+            {
+                previous = double.NaN;
+                continue;
+            }
+            QP state = Relative(i);
+            double side = double3.Dot(state.Q.ToDouble3(), n);
+            if (double.IsFinite(previous) && (previous < 0) != (side < 0) && t > trajectory.Times[i - 1])
+            {
+                // Bisected on the Hermite curve between the samples.
+                (times[0], times[1]) = (trajectory.Times[i - 1], t);
+                (about[0], about[1]) = (previousState, state);
+                double lo = times[0], hi = times[1];
+                for (int k = 0; k < 60 && hi - lo > 1e-6; k++)
+                {
+                    double mid = 0.5 * (lo + hi);
+                    double s = double3.Dot(Hermite.Between(times, about, 1, mid).Q.ToDouble3(), n);
+                    (lo, hi) = (s < 0) == (previous < 0) ? (mid, hi) : (lo, mid);
+                }
+                double at = 0.5 * (lo + hi);
+                QP node = Hermite.Between(times, about, 1, at);
+                double3 h = double3.Cross(node.Q.ToDouble3(), node.P.ToDouble3());
+                double inclination = Math.Acos(Math.Clamp(double3.Dot(h.Normalized(), n), -1, 1)) * (180 / Math.PI);
+                double3 absolute = node.Q.ToDouble3() + ephemeris.State(plane.ParentIndex, at).Q.ToDouble3();
+                nodes.Add((at, absolute, side >= 0, inclination));
+            }
+            previous = side;
+            previousState = state;
+        }
+        return nodes;
+    }
 
     // Accumulates segments into one trajectory.
     private sealed class Trajectory
@@ -1033,6 +1104,21 @@ internal static class Predictor
                                        $"{body.Id} {Format.Altitude(a.Distance - body.MeanRadius)}", body.Id,
                                        a.Distance - body.MeanRadius));
                 }
+            }
+        }
+        if (r.Target is { } plane)
+        {
+            // As KSA's: "aN"/"dN", with the inclination to the target's orbit; only the first of each listed.
+            bool listedAn = false, listedDn = false;
+            foreach (var (time, q, ascending, inclination) in PlaneCrossings(ephemeris, line, trajectory, plane))
+            {
+                string name = ascending ? "aN" : "dN";
+                string detail = $"{inclination:F2}° to {plane.Name}'s orbit";
+                ref bool listed = ref ascending ? ref listedAn : ref listedDn;
+                markers.Add(Marker(ascending ? Prediction.MarkerKind.AscendingNode
+                                             : Prediction.MarkerKind.DescendingNode,
+                                   time, q, $"{name}: {detail}", name, detail: detail, listed: !listed));
+                listed = true;
             }
         }
         markers.Sort((x, y) => x.Time.CompareTo(y.Time));
