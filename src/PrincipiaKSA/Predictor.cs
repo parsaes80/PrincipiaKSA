@@ -316,10 +316,14 @@ internal static class Predictor
             }
             stage = "target: Δv and ignition";
             float3 dv = target.DeltaVTargetCci;
-            double ignition = GameTime.ToSecondsSinceJ2000(target.IgnitionTime);
-            burns.Add(new PlannedBurn(impulse, double.IsFinite(ignition) && ignition < impulse ? ignition : null,
-                                      dv.Length(), new double3(dv.X, dv.Y, dv.Z).Transform(cci2Cce).Normalized()));
-            return;
+            // A target loaded while the burn had no Δv keeps none inside the alignment window: plan the burn itself.
+            if (dv.Length() > 0)
+            {
+                double ignition = GameTime.ToSecondsSinceJ2000(target.IgnitionTime);
+                burns.Add(new PlannedBurn(impulse, double.IsFinite(ignition) && ignition < impulse ? ignition : null,
+                                          dv.Length(), new double3(dv.X, dv.Y, dv.Z).Transform(cci2Cce).Normalized()));
+                return;
+            }
         }
         if (impulse <= now)
         {
