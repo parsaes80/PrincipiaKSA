@@ -392,7 +392,6 @@ internal static class SettingsWindow
     {
         Section("Diagnostics");
         ImGui.Checkbox("Show KSA's patched conics", ref Settings.ShowKsaConics);
-        ImGui.TextDisabled("Logs to mods/PrincipiaKSA/PrincipiaKSA.log");
     }
 
     private const int VisibleEvents = 10;
