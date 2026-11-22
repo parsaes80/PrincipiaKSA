@@ -193,6 +193,9 @@ internal static class BurnGizmoDragPatch
     // crossing's precision (1 ms).
     private const double CrossingMargin = 0.01;
 
+    // How far ahead of now a drag may bring a node (s): at now it would be past at once, with no track to follow.
+    private const double MinimumLead = 60;
+
     // The tightest of `bounds` by `pick` (Math.Max for a lower bound), and its name.
     private static (double Value, string Why) Bound(Func<double, double, double> pick,
                                                    params (double Value, string Why)[] bounds)
@@ -243,7 +246,7 @@ internal static class BurnGizmoDragPatch
             double first = s > 0 ? stretch.From + CrossingMargin : stretch.From;
             double last = stretch.Closed ? stretch.To - CrossingMargin : stretch.To;
             // The bounds, each named for the log.
-            (double lo, string loWhy) = Bound(Math.Max, (now, "now"), (path.Start, "the start of its path"),
+            (double lo, string loWhy) = Bound(Math.Max, (now + MinimumLead, "a minute from now"), (path.Start, "the start of its path"),
                                               (t - reach, "its drag window"), (coverStart, "the start of KSA's plan"),
                                               (first, "its sphere of influence"));
             (double hi, string hiWhy) = Bound(Math.Min, (line.Times[^1], "the end of its track"),
