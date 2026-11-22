@@ -342,7 +342,7 @@ internal static class MapOverlay
         Vehicle? vehicle = Program.ControlledVehicle;
         Prediction? prediction = Predictor.PredictionFor(vehicle), plan = Predictor.PlanFor(vehicle);
         if (Settings.ShowLagrangePoints &&
-            (prediction ?? plan)?.Frame is { Kind: PlotFrame.BarycentricRotating } frame)
+            (prediction ?? plan)?.Frame is { Kind: PlotFrame.BarycentricRotating or PlotFrame.BodyDirection } frame)
         {
             DrawLagrangePoints(viewport, frame);
         }
@@ -358,13 +358,23 @@ internal static class MapOverlay
 
     private static readonly string[] LagrangeNames = ["L1", "L2", "L3", "L4", "L5"];
 
-    // The two bodies' Lagrange points, where they stand still: in the two-body rotating frame.
+    // The two bodies' Lagrange points, where they stand still: in the "Two body" frame.
     private static void DrawLagrangePoints(IGameViewport viewport, FrameSpec frame)
     {
         Astronomical centre = frame.Centre, secondary = frame.Secondary!;
         double3 centreEcl = centre.GetPositionEcl(), secondaryEcl = secondary.GetPositionEcl();
-        double3[] points = FrameSpec.LagrangePoints(((IParentBody)centre).Mu, ((IParentBody)secondary).Mu,
-                                                    (secondaryEcl - centreEcl).Length());
+        double mu1 = ((IParentBody)centre).Mu, mu2 = ((IParentBody)secondary).Mu;
+        double separation = (secondaryEcl - centreEcl).Length();
+        double3[] points = FrameSpec.LagrangePoints(mu1, mu2, separation);
+        if (frame.Kind == PlotFrame.BodyDirection)
+        {
+            // About the centre body, which is mu2 / (mu1 + mu2) of the way from the barycentre, on −x.
+            var shift = new double3(mu2 / (mu1 + mu2) * separation, 0, 0);
+            for (int i = 0; i < points.Length; i++)
+            {
+                points[i] += shift;
+            }
+        }
         var mapper = new FrameMapper(frame);
         Camera camera = viewport.GetCamera();
         ImDrawListPtr drawList = ImGuiHelper.GetOverlayDrawList(viewport);

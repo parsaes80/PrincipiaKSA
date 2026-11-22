@@ -130,7 +130,7 @@ internal static class SettingsWindow
             UniverseTime now = Universe.GetElapsedTime();
             double tMax = system.Ephemeris.TimeRange.TMax;
             double ahead = (tMax - GameTime.ToSecondsSinceJ2000(now)) / 86400;
-            ImGui.Text($"n-body gravity: {system.Links.Count()} bodies, planets integrated to " +
+            ImGui.Text($"{system.Links.Count()} bodies, planets integrated to " +
                        $"{GameTime.ToDateTime(GameTime.FromSecondsSinceJ2000(tMax)):yyyy-MM-dd HH:mm} " +
                        $"({ahead:F1} days ahead)");
         }
@@ -197,20 +197,24 @@ internal static class SettingsWindow
     {
         Section("Plotting frame");
         int kind = (int)Settings.Frame;
-        ImGui.RadioButton("Body-centred", ref kind, (int)PlotFrame.BodyCentred);
+        ImGui.RadioButton("Body Centred", ref kind, (int)PlotFrame.BodyCentred);
         ImGui.SameLine();
-        ImGui.RadioButton("Body surface", ref kind, (int)PlotFrame.BodySurface);
+        ImGui.RadioButton("Body Surface", ref kind, (int)PlotFrame.BodySurface);
         ImGui.SameLine();
-        ImGui.RadioButton("Two-body rotating", ref kind, (int)PlotFrame.BarycentricRotating);
+        ImGui.RadioButton("Two Body", ref kind, (int)PlotFrame.BarycentricRotating);
         Settings.Frame = (PlotFrame)kind;
 
+        Prediction? p = Predictor.PredictionFor(Program.ControlledVehicle);
         BodyCombo(system, "Centre", ref Settings.CentreBody, "Automatic (vessel's parent)");
         if (Settings.Frame == PlotFrame.BarycentricRotating)
         {
             BodyCombo(system, "With", ref Settings.SecondaryBody, "Automatic (largest moon or parent)");
+            // Off: about the pair's barycentre; on: about the centre body (Principia's body-direction frame).
+            ImGui.Checkbox($"Centred on {p?.Frame.Centre.Id ?? "the centre body"}###centred",
+                           ref Settings.TwoBodyCentred);
             ImGui.Checkbox("Show Lagrange points", ref Settings.ShowLagrangePoints);
         }
-        if (Predictor.PredictionFor(Program.ControlledVehicle) is { } p)
+        if (p != null)
         {
             ImGui.TextDisabled($"Drawn {p.Frame.Describe()}");
         }

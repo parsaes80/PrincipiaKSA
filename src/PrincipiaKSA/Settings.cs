@@ -52,11 +52,12 @@ internal static class Settings
     // KSA's own patched-conic lines and markers for the controlled vessel.
     public static bool ShowKsaConics = false;
 
-    public static PlotFrame Frame = PlotFrame.BodyCentred;
-    public static bool ShowLagrangePoints = true;  // In the two-body rotating frame.
+    public static PlotFrame Frame = PlotFrame.BodyCentred;  // BarycentricRotating is "Two body".
+    public static bool TwoBodyCentred = false;      // "Two body" about the centre body, not the barycentre.
+    public static bool ShowLagrangePoints = true;   // In the "Two body" frame.
 
     public static string? CentreBody;     // null: the vessel's parent.
-    public static string? SecondaryBody;  // For BarycentricRotating; null: automatic.
+    public static string? SecondaryBody;  // For "Two body"; null: automatic.
 
     // The window, as KSA's panels (right click on it): shown (else brought
     // back from StarMap's Mods menu), always on top (when detached), locked
@@ -82,6 +83,7 @@ internal static class SettingsStore
         public string Frame { get; set; } = Settings.Frame.ToString();
         public string? CentreBody { get; set; } = Settings.CentreBody;
         public string? SecondaryBody { get; set; } = Settings.SecondaryBody;
+        public bool TwoBodyCentred { get; set; } = Settings.TwoBodyCentred;
         public bool WindowEnabled { get; set; } = Settings.WindowEnabled;
         public bool WindowAlwaysOnTop { get; set; } = Settings.WindowAlwaysOnTop;
         public bool WindowLocked { get; set; } = Settings.WindowLocked;
@@ -109,9 +111,13 @@ internal static class SettingsStore
             }
             string json = File.ReadAllText(FilePath);
             Data d = JsonSerializer.Deserialize<Data>(json) ?? new Data();
-            Settings.Frame = Enum.TryParse(d.Frame, out PlotFrame frame) ? frame : PlotFrame.BodyCentred;
+            // BodyDirection is chosen with TwoBodyCentred, never saved as the frame.
+            Settings.Frame = Enum.TryParse(d.Frame, out PlotFrame frame) && frame != PlotFrame.BodyDirection
+                ? frame
+                : PlotFrame.BodyCentred;
             Settings.CentreBody = d.CentreBody;
             Settings.SecondaryBody = d.SecondaryBody;
+            Settings.TwoBodyCentred = d.TwoBodyCentred;
             Settings.WindowEnabled = d.WindowEnabled;
             Settings.WindowAlwaysOnTop = d.WindowAlwaysOnTop;
             Settings.WindowLocked = d.WindowLocked;

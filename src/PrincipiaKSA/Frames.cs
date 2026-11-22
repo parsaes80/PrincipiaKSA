@@ -13,6 +13,7 @@ internal enum PlotFrame
     BodyCentred,         // Non-rotating, centred on a body (like KSA's own orbit lines).
     BodySurface,         // Rotating with a body: ground tracks, landing sites.
     BarycentricRotating, // Rotating with two bodies: L-points stand still.
+    BodyDirection,       // The same, centred on the first body ("Centred on" in the window).
 }
 
 // The bodies a plotting frame is attached to.
@@ -23,6 +24,7 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
     {
         PlotFrame.BodyCentred => $"centred on {Centre.Id}",
         PlotFrame.BodySurface => $"surface of {Centre.Id}",
+        PlotFrame.BodyDirection => $"centred on {Centre.Id}, facing {Secondary?.Id}",
         _ => $"rotating with {Centre.Id}–{Secondary?.Id}",
     };
 
@@ -54,7 +56,8 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
         {
             return new FrameSpec(PlotFrame.BodyCentred, centre, centreIndex, null, -1);
         }
-        return new FrameSpec(PlotFrame.BarycentricRotating, centre, centreIndex, secondary, secondaryIndex);
+        PlotFrame kind = Settings.TwoBodyCentred ? PlotFrame.BodyDirection : PlotFrame.BarycentricRotating;
+        return new FrameSpec(kind, centre, centreIndex, secondary, secondaryIndex);
     }
 
     // An absolute state in this frame's coordinates (`centre`: the centre's
@@ -77,6 +80,7 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
                 return (c, relV.Transform(cce2Ccf) - double3.Cross(new double3(0, 0, omega), c));
             }
             case PlotFrame.BarycentricRotating:
+            case PlotFrame.BodyDirection:
             {
                 QP secondary = ephemeris.State(frame.SecondaryIndex, t);
                 double mu1 = ((IParentBody)frame.Centre).Mu, mu2 = ((IParentBody)frame.Secondary!).Mu;
@@ -84,6 +88,10 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
                 double3 q2 = secondary.Q.ToDouble3(), v2 = secondary.P.ToDouble3();
                 (double3 origin, double3 x, double3 y, double3 z) = RotatingAxes(mu1, q1, v1, mu2, q2, v2);
                 double3 vOrigin = (mu1 * v1 + mu2 * v2) / (mu1 + mu2);
+                if (frame.Kind == PlotFrame.BodyDirection)
+                {
+                    (origin, vOrigin) = (q1, v1);
+                }
                 double3 d = q - origin, dv = v - vOrigin;
                 var c = new double3(double3.Dot(d, x), double3.Dot(d, y), double3.Dot(d, z));
                 var cv = new double3(double3.Dot(dv, x), double3.Dot(dv, y), double3.Dot(dv, z));
@@ -162,10 +170,15 @@ internal readonly struct FrameMapper
                 _rotation = ((IParentBody)frame.Centre).GetCcf2Cce(Universe.GetElapsedTime());
                 break;
             case PlotFrame.BarycentricRotating:
+            case PlotFrame.BodyDirection:
                 (_origin, _x, _y, _z) = FrameSpec.RotatingAxes(
                     ((IParentBody)frame.Centre).Mu, frame.Centre.GetPositionEcl(), frame.Centre.GetVelocityEcl(),
                     ((IParentBody)frame.Secondary!).Mu, frame.Secondary!.GetPositionEcl(),
                     frame.Secondary!.GetVelocityEcl());
+                if (frame.Kind == PlotFrame.BodyDirection)
+                {
+                    _origin = frame.Centre.GetPositionEcl();
+                }
                 break;
             default:
                 _origin = frame.Centre.GetPositionEcl();
@@ -176,7 +189,7 @@ internal readonly struct FrameMapper
     public double3 ToEcl(double3 c) => _kind switch
     {
         PlotFrame.BodySurface => _origin + c.Transform(_rotation),
-        PlotFrame.BarycentricRotating => _origin + c.X * _x + c.Y * _y + c.Z * _z,
+        PlotFrame.BarycentricRotating or PlotFrame.BodyDirection => _origin + c.X * _x + c.Y * _y + c.Z * _z,
         _ => _origin + c,
     };
 }
