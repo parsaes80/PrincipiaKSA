@@ -62,7 +62,7 @@ internal static class GaugeApsidesPatch
     }
 }
 
-// The warp-to-Ap/Pe buttons' times, set each frame from the conic.
+// The warp-to-Ap/Pe and warp-to-next-event buttons' times, set each frame from the conic.
 [HarmonyPatch(typeof(Vehicle), nameof(Vehicle.UpdatePerFrameData))]
 internal static class WarpToApsisPatch
 {
@@ -70,6 +70,8 @@ internal static class WarpToApsisPatch
         AccessTools.FieldRefAccess<Vehicle, UniverseTime>("_nextPeriapsisTime");
     private static readonly AccessTools.FieldRef<Vehicle, UniverseTime> NextApoapsisTime =
         AccessTools.FieldRefAccess<Vehicle, UniverseTime>("_nextApoapsisTime");
+    private static readonly AccessTools.FieldRef<Vehicle, UniverseTime> NextPatchEventTime =
+        AccessTools.FieldRefAccess<Vehicle, UniverseTime>("_nextPatchEventTime");
 
     [HarmonyPostfix]
     private static void Postfix(Vehicle __instance)
@@ -85,10 +87,17 @@ internal static class WarpToApsisPatch
                 apsis is { } a ? GameTime.FromSecondsSinceJ2000(a.Time) : UniverseTime.EndOfTime;
             NextPeriapsisTime(__instance) = Time(NBodyApsides.Next(__instance, apoapsis: false));
             NextApoapsisTime(__instance) = Time(NBodyApsides.Next(__instance, apoapsis: true));
+            // As KSA's: the next encounter or escape (not an impact), here where the prediction crosses a sphere.
+            double now = GameTime.Now;
+            NextPatchEventTime(__instance) =
+                Predictor.PredictionFor(__instance)?.Markers.FirstOrDefault(m =>
+                    m.Kind == Prediction.MarkerKind.Sphere && m.Listed && m.Time > now) is { } crossing
+                    ? GameTime.FromSecondsSinceJ2000(crossing.Time)
+                    : UniverseTime.EndOfTime;
         }
         catch (Exception e)
         {
-            Log.WarnOnce("[gauges] n-body warp-to-Ap/Pe times", e);
+            Log.WarnOnce("[gauges] n-body warp-to times", e);
         }
     }
 }
