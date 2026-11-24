@@ -680,7 +680,7 @@ internal static class BurnFieldsPatch
         {
             if (BurnAxes.Of(burn) is { } axes)
             {
-                _shown = BurnAxes.FromKsa(axes, burn.DeltaVVlf);
+                _shown = AsDisplayed(BurnAxes.FromKsa(axes, burn.DeltaVVlf));
                 return ref _shown;
             }
         }
@@ -692,6 +692,11 @@ internal static class BurnFieldsPatch
     }
 
     private static double3 ShownValue(Burn burn) => Shown(burn);
+
+    // To the six decimals KSA's fields show, without -0, so the path's recomputation noise below them doesn't flicker.
+    private static double3 AsDisplayed(double3 v) => new(Displayed(v.X), Displayed(v.Y), Displayed(v.Z));
+
+    private static double Displayed(double x) => Math.Round(x, 6) + 0.0;
 
     private static void Enter(Burn burn, double3 inFrame)
     {
