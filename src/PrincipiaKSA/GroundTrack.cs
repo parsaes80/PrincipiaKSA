@@ -4,12 +4,8 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// KSA's ground track window (F3) samples the vessel's patched conics. While
-// Principia drives, it samples the vessel's n-body path instead: the flight
-// plan when there is one (it starts with the coast to the first burn), else
-// the prediction. Past their end it holds the last point, so the track ends
-// there rather than going on along KSA's conic. KSA keeps its drawing, burn
-// and impact markers and atmosphere colours.
+// KSA's ground track window (F3) samples the n-body flight plan, else the prediction, instead of the patched conics;
+// past their end it holds the last point rather than following KSA's conic.
 internal static class GroundTrack
 {
     // Replaces PatchedConic.GetStateVectorsAt in GroundTrackWindow.DrawGroundTrack.

@@ -4,15 +4,10 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Guards against KSA's own bugs that n-body paths reach and that would
-// otherwise abort the game.
+// Guards against KSA bugs that n-body paths reach and that would abort the game.
 
-// KSA's time to leave a sphere of influence can come out NaN at the edge of
-// its orbit formulas (an escape near the asymptote of a hyperbola, an orbit
-// near parabolic), and constructing a UniverseTime from it throws. On the
-// transfer planner's worker threads nothing catches it and the game aborts.
-// A NaN true anomaly a few lines earlier already ends the plan as an error;
-// a NaN time now ends it the same way.
+// A NaN escape time (near a hyperbola's asymptote or a parabola) throws on the transfer planner's threads, uncaught;
+// it now ends the plan as an error, as KSA already does for a NaN true anomaly.
 [HarmonyPatch(typeof(FlightPlan), nameof(FlightPlan.CalculateEscapePatch))]
 internal static class EscapePatchGuard
 {
@@ -33,14 +28,8 @@ internal static class EscapePatchGuard
     }
 }
 
-// KSA classes an orbit as parabolic when its energy is within a millionth of
-// zero, and gives it no period, but elsewhere tells a closed orbit by
-// eccentricity < 1. Near periapsis that window reaches down to e ≈ 0.999996;
-// an orbit there takes the closed-orbit path, divides by the missing period
-// and throws "Cannot construct a UniverseTime from NaN" from
-// Vehicle.UpdatePerFrameData, aborting the game, when a burn or the n-body
-// path crosses escape. A parabolic orbit gets its exact eccentricity, 1, so
-// both tests agree; its shape comes from the periapsis and doesn't change.
+// KSA calls an orbit parabolic (no period) by its energy but closed by e < 1; down to e ≈ 0.999996 both hold, and the
+// closed-orbit path divides by the missing period and aborts the game. A parabolic orbit gets e = 1 exactly.
 [HarmonyPatch]
 internal static class ParabolicOrbitPatch
 {

@@ -4,11 +4,8 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// KSA's planets and moons follow Principia. Each step, a body's state comes
-// from Principia (StateFor); between frames, its conic is rebuilt as the
-// osculating orbit where it has drifted (RefreshOrbits), as KSA also uses it
-// for orbit lines and encounters. A body's equator is defined relative to its
-// orbit's plane, so the rebuild keeps the equator where it was.
+// Planets and moons follow Principia: each step's state comes from it (StateFor), and between frames a drifted conic
+// is rebuilt as the osculating orbit (RefreshOrbits), since KSA uses it for lines and encounters.
 internal static class CelestialDriver
 {
     // Rebuild a conic off by more than this fraction of its distance.
@@ -19,10 +16,8 @@ internal static class CelestialDriver
 
     public static long StatesServed;
     public static long OrbitsRefreshed;
-    private static bool _selfTestLogged;
 
-    // Principia's state for `body` at `time`, or null if it isn't driven.
-    // Thread-safe.
+    // Null if `body` isn't driven. Thread-safe.
     public static StateVectors? StateFor(IOrbiter body, UniverseTime time)
     {
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -53,7 +48,7 @@ internal static class CelestialDriver
         }
     }
 
-    // Body minus parent, in Ecl axes, from Principia at `t` (s since J2000).
+    // Body minus parent, in Ecl axes.
     public static (double3 Q, double3 P) RelativeEcl(PrincipiaSystem system, PrincipiaSystem.Link link, double t)
     {
         QP s = system.Ephemeris.State(link.Index, t);
@@ -93,8 +88,7 @@ internal static class CelestialDriver
         }
     }
 
-    // Moves every driven body to Principia's state at once, after the game
-    // time jumps.
+    // After the game time jumps.
     public static void JumpTo(UniverseTime time)
     {
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -113,8 +107,7 @@ internal static class CelestialDriver
         RefreshOrbits(force: true);
     }
 
-    // Replaces the body's conic with the osculating orbit of `state` for the
-    // two-body problem with μ = G(M_parent + M_body), keeping its equator.
+    // The osculating orbit for μ = G(M_parent + M_body), keeping the equator (defined relative to the orbit's plane).
     private static void Replace(Celestial body, StateVectors state)
     {
         Orbit old = body.Orbit;
@@ -122,30 +115,15 @@ internal static class CelestialDriver
         double totalMass = parent.Mass + body.Mass;
         Orbit fresh = Osculating(parent, state, totalMass, old.OrbitLineColor);
 
-        // UpdatePerFrameData computes Cci→Cce as (ParentCce2Orb ∘ Orb2Cci)⁻¹.
-        // Keep the composition, so the equator doesn't move.
+        // KSA's Cci→Cce is (ParentCce2Orb ∘ Orb2Cci)⁻¹: keep the composition.
         doubleQuat composition = doubleQuat.Concatenate(old.GetParentCce2Orb(), Orb2Cci(body));
         body.SetOrbit(fresh);
         Orb2Cci(body) = doubleQuat.Concatenate(fresh.GetParentCce2Orb().Inverse(), composition);
         Interlocked.Increment(ref OrbitsRefreshed);
-
-        if (!_selfTestLogged)
-        {
-            _selfTestLogged = true;
-            double3 rebuilt = fresh.GetStateVectorsAt(state.StateTime).PositionCci;
-            doubleQuat after = doubleQuat.Concatenate(fresh.GetParentCce2Orb(), Orb2Cci(body));
-            double3 x0 = double3.UnitX.Transform(composition), x1 = double3.UnitX.Transform(after);
-            double3 z0 = double3.UnitZ.Transform(composition), z1 = double3.UnitZ.Transform(after);
-            Log.Info($"[orbits] first rebuild ({body.Id}): conic reproduces the state to " +
-                     $"{(rebuilt - state.PositionCci).Length():E3} m; equator moved by " +
-                     $"{Math.Max((x1 - x0).Length(), (z1 - z0).Length()):E3} rad");
-        }
     }
 
-    // The osculating orbit of `state` about `centralMass`. KSA builds it with
-    // the parent's μ; the elements depend on the velocity only through v²/μ
-    // and (r·v)·v/μ, so scaling the velocity by k = √(μ_parent/μ_central)
-    // gives them for μ_central, with the time since periapsis scaled by k.
+    // KSA builds orbits with the parent's μ; the elements depend on v only through v²/μ and (r·v)·v/μ, so scaling v by
+    // k = √(μ_parent/μ_central) gives them for μ_central, with the time since periapsis scaled by k.
     public static Orbit Osculating(IParentBody parent, StateVectors state, double centralMass, byte4 color)
     {
         double k = Math.Sqrt(parent.Mass / centralMass);
@@ -161,8 +139,7 @@ internal static class CelestialDriver
     }
 }
 
-// KSA's per-body job computes the body's next state from its conic, on worker
-// threads; the state is replaced with Principia's.
+// KSA's per-body worker job computes the next state from the conic; Principia's replaces it.
 [HarmonyPatch(typeof(CelestialUpdateTask), "DoWorkAndStageResults")]
 internal static class CelestialUpdatePatch
 {

@@ -6,15 +6,8 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// KSA's planned burns on Principia's path: each burn's patch and body from
-// the n-body state (BurnAnchor), burns KSA's conics don't reach kept
-// (BurnPatchRescue), and the flight computer's target re-aimed
-// (BurnTargetRefresher).
-
-// KSA's burn plans, as the mod reads them.
 internal static class BurnPlans
 {
-    // Every burn of the plan, in its order.
     public static IEnumerable<Burn> All(this BurnPlan plan)
     {
         for (int i = 0; i < plan.BurnCount; i++)
@@ -26,49 +19,33 @@ internal static class BurnPlans
         }
     }
 
-    // When the vessel makes a burn. A departure planned on the parent's orbit
-    // (the transfer planner's, Burn.ParentDepartureBurn) is a vessel burn at
-    // ParentDepartureTime, whose Δv KSA computes (CalculateTransferBurn); its
-    // Time and Patch are the parent's.
+    // A transfer departure is planned on the parent's orbit: its Time is the parent's, the vessel burns at ParentDepartureTime.
     public static UniverseTime VesselTime(this Burn burn) =>
         burn.ParentDepartureBurn ? burn.ParentDepartureTime : burn.Time;
 
-    // Whether a burn with Δv other than `except` comes before `time` (or at
-    // it too, `inclusive`): where the flight plan, not the prediction, is
-    // the vessel's path.
+    // Where the flight plan, not the prediction, is the vessel's path.
     public static bool AnyWithDeltaVBefore(this BurnPlan plan, UniverseTime time, bool inclusive,
                                            Burn? except = null) =>
         plan.All().Any(b => b != except && b.HasDeltaV && !b.IsInterstellar &&
                             (inclusive ? b.VesselTime() <= time : b.VesselTime() < time));
 }
 
-// Where a maneuver node's burn is on Principia's path, and the body it is
-// about. KSA plans a burn's Δv in prograde/normal/radial about the parent of
-// its patch at the burn time, a patch of its conics, which after an encounter
-// (a close one above all) no longer follow the n-body path: a node there was
-// about whatever body the conics had then. KSA flies the burn from the
-// vessel's real orbit, about the body whose sphere of influence the vessel is
-// really in. So the anchor applies KSA's own sphere-of-influence rules
-// (Spheres) to the n-body position at the burn time, and KSA gets a patch
-// with the n-body state there (BurnPatchAnchor): the node's arrows, the
-// flight plan, the drag step, KSA's burn editor and the flight computer's
-// target all have the body and state the burn will be flown from.
-
+// A burn's patch from the n-body state at its time, about the body KSA's own sphere rules (Spheres) give there. KSA's
+// conics stop following the n-body path after an encounter, so their patch could be about the wrong body; with this
+// one the node's arrows, the plan, the drag step, the burn editor and the flight computer all use the real state.
 internal static class BurnAnchor
 {
-    // The n-body state at the burn time relative to Parent (Cce axes), from
-    // the path whose samples are Source, and the patch handed to KSA.
+    // The state relative to Parent (Cce axes), from the path whose samples are Source.
     public sealed record Anchor(double Time, QP[] Source, Astronomical Parent, int ParentIndex,
                                 double3 PositionCce, double3 VelocityCce, PatchedConic Patch);
 
     // Kept while the burn time and the path are unchanged.
     private static readonly ConditionalWeakTable<Burn, Anchor> Anchors = new();
 
-    // The anchor last made for the burn, without making one.
+    // Without making one.
     public static Anchor? Cached(Burn burn) => Anchors.TryGetValue(burn, out Anchor? anchor) ? anchor : null;
 
-    // A burn still ahead on Principia's path; null where there is none yet
-    // (KSA's patch stands in) or for the transfer planner's departures.
+    // Null where there is no path yet (KSA's patch stands in) or for transfer departures.
     public static Anchor? Get(Burn burn)
     {
         double t = GameTime.ToSecondsSinceJ2000(burn.Time);
@@ -82,8 +59,7 @@ internal static class BurnAnchor
         bool hasCached = Anchors.TryGetValue(burn, out Anchor? cached) && cached!.Time == t;
         if (Source(burn, vehicle, t) is not { StateTimes.Length: > 0 } path)
         {
-            // None just now (a prediction being redone, or failed): the last
-            // anchor, while the burn hasn't moved.
+            // None just now (a prediction being redone, or failed): the last anchor, while the burn hasn't moved.
             return hasCached ? cached : null;
         }
         if (hasCached && ReferenceEquals(cached!.Source, path.States))
@@ -118,8 +94,7 @@ internal static class BurnAnchor
             doubleQuat cce2Cci = parentBody.GetCci2Cce().Inverse();
             Orbit orbit = Orbit.CreateFromStateCci(parentBody, burn.Time, q.Transform(cce2Cci), v.Transform(cce2Cci),
                                                    vehicle.OrbitColor);
-            // Its stretch of the path, in the body's sphere of influence, as
-            // far as the path goes: where KSA's ±orbit buttons may move it.
+            // Its stretch in the body's sphere of influence: where KSA's ±orbit buttons may move it.
             Stretch stretch = path.Line.Stretches[path.Line.StretchAt(t)];
             double from0 = double.IsFinite(stretch.From) ? stretch.From : path.Start;
             UniverseTime start = GameTime.FromSecondsSinceJ2000(Math.Min(t, Math.Max(Math.Max(now, path.Start), from0)));
@@ -138,9 +113,7 @@ internal static class BurnAnchor
         }
     }
 
-    // The n-body path before the burn: its node track (or the prediction, for
-    // the first burn), else, until a node just created or moved gets its
-    // track, the flight plan where it isn't burning.
+    // Its node track, else (until a new or moved node gets one) the flight plan where it isn't burning.
     private static BurnNode.NodePath? Source(Burn burn, Vehicle vehicle, double t)
     {
         if (BurnNode.Path(burn, window: false) is { } path)
@@ -185,8 +158,7 @@ internal static class BurnAnchor
                $"({Settings.PlanSteps:N0} steps per coast); last prediction error: {Predictor.LastError ?? "none"}";
     }
 
-    // Logged when KSA's conics and Principia's path put a burn about different
-    // bodies, once per change.
+    // When KSA's conics and Principia's path put a burn about different bodies, once per change.
     private static readonly ConditionalWeakTable<Burn, StrongBox<(IParentBody?, Astronomical)>> Logged = new();
 
     public static void Compare(Burn burn, PatchedConic? ksa, Anchor anchor)
@@ -207,8 +179,7 @@ internal static class BurnAnchor
     }
 }
 
-// A burn's patch (Burn.Patch, its frame and state at the burn time) from
-// Principia's path. Not the getter, small enough to be inlined.
+// Burn.Patch's source; not the getter itself, which is small enough to be inlined.
 [HarmonyPatch(typeof(BurnPlan), nameof(BurnPlan.TryGetBurnPatch))]
 internal static class BurnPatchAnchor
 {
@@ -231,17 +202,12 @@ internal static class BurnPatchAnchor
     }
 }
 
-// KSA deletes a burn ("No patch found for burn") when none of its conic plans
-// reaches the burn's time: the previous burns' plans, newest first, then the
-// vessel's. After an encounter its conics are not the n-body path, and a
-// later node can lie past where they end (a plan stops at the next burn, and
-// a burn without Δv has none). The vessel's plan is KSA's last resort: where
-// it fails too, KSA gets the burn's patch on Principia's path, so a burn is
-// deleted only where Principia's path doesn't reach it either.
+// KSA deletes a burn ("No patch found for burn") when none of its conic plans reaches its time, as after an encounter
+// a later node can lie past them. Where KSA's last resort, the vessel's plan, fails too, the anchor's patch is used.
 [HarmonyPatch(typeof(BurnPlan), nameof(BurnPlan.CalculateNewFlightPlansFromFlightComputerOnly))]
 internal static class BurnPatchRescue
 {
-    // The plans being computed on this thread: the controlled vessel's own.
+    // This thread's plans, if they are the controlled vessel's.
     [ThreadStatic] private static BurnPlan? _burns;
     [ThreadStatic] private static FlightPlan? _vesselPlan;
     [ThreadStatic] private static List<FlightPlan>? _newPlans;
@@ -272,8 +238,6 @@ internal static class BurnPatchRescue
              AccessTools.Method(typeof(BurnPatchRescue), nameof(TryFindPatch))));
     }
 
-    // FlightPlan.TryFindPatch, with the burn's patch on Principia's path where
-    // KSA's last resort finds none.
     public static PatchedConic? TryFindPatch(FlightPlan plan, UniverseTime time)
     {
         PatchedConic? found = plan.TryFindPatch(time);
@@ -313,16 +277,15 @@ internal static class BurnPatchRescue
         return null;
     }
 
-    // KSA is about to delete a burn: what its plans and Principia's lines
-    // cover, at most every 5 s.
+    // At most every 5 s.
     private static void Dump(BurnPlan burns, UniverseTime time, Burn? burn)
     {
-        long tick = System.Diagnostics.Stopwatch.GetTimestamp();
+        long tick = Stopwatch.GetTimestamp();
         if (tick < Interlocked.Read(ref _nextDump))
         {
             return;
         }
-        Interlocked.Exchange(ref _nextDump, tick + 5 * System.Diagnostics.Stopwatch.Frequency);
+        Interlocked.Exchange(ref _nextDump, tick + 5 * Stopwatch.Frequency);
         double now = GameTime.Now;
         string H(UniverseTime x) =>
             GameTime.ToSecondsSinceJ2000(x) is var s && double.IsFinite(s) ? $"{(s - now) / 3600:F1}" : "∞";
@@ -349,12 +312,8 @@ internal static class BurnPatchRescue
     }
 }
 
-// Keeps KSA's auto-burn aimed for the n-body trajectory. KSA fixes a burn's
-// direction once, when it loads the burn, but the n-body path moves on (a
-// fraction of a degree misses the Moon by thousands of km). Until the flight
-// computer starts aligning, KSA's own target is recomputed every quarter
-// second from the burn's patch: Principia's state at the burn time
-// (BurnAnchor), else KSA's conic.
+// KSA fixes a burn's direction when it loads it, but the n-body path moves on (a fraction of a degree misses the Moon by
+// thousands of km): until the flight computer aligns, its target is recomputed every quarter second from the burn.
 internal static class BurnTargetRefresher
 {
     private static readonly long Interval = Stopwatch.Frequency / 4;
@@ -371,7 +330,7 @@ internal static class BurnTargetRefresher
     private static BurnTarget? _flying, _finished;
     private static double _flyingTargetDeltaV;
 
-    // Logs each burn KSA flies: its ignition, and the Δv and orbit at the end.
+    // Logs each burn's ignition, and its Δv and orbit at the end.
     private static void Monitor(Vehicle vehicle)
     {
         BurnTarget? target = vehicle.FlightComputer.Burn;

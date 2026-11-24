@@ -3,15 +3,11 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Where the mod runs in KSA's frame. There is no loop of the mod's own: KSA
-// calls these hooks at fixed points of its frame (Program.OnFrame), in this
-// order: a star system loads (LoadSystemPatch); each frame, the step KSA's
-// jobs will simulate is chosen (GetJobSimStepPatch), the jobs run on worker
-// threads (CelestialDriver, VesselDriver), and between frames their results
-// are applied (ApplyOrbitSolversPatch); a save loads (DeserializeSavePatch).
+// The mod has no loop of its own; KSA's frame calls these hooks: a system loads (LoadSystemPatch); each frame the jobs'
+// step is chosen (GetJobSimStepPatch), jobs run on workers (CelestialDriver, VesselDriver), and between frames
+// results are applied (ApplyOrbitSolversPatch); a save loads (DeserializeSavePatch).
 
-// KSA picks the step its jobs will simulate: integrate that far first, and
-// keep a few real seconds ahead at the current warp.
+// Integrate as far as the step KSA's jobs will simulate, and ask for more ahead.
 [HarmonyPatch(typeof(Universe), nameof(Universe.GetJobSimStep))]
 internal static class GetJobSimStepPatch
 {
@@ -31,8 +27,7 @@ internal static class GetJobSimStepPatch
                 system.Prolonger.EnsureProlonged(next);
             }
             double simSecondsPerRealSecond = __result.DeltaTime / Math.Max(dtPlayer, 1e-3);
-            // A few real seconds ahead at this warp, and the planets kept
-            // integrated well ahead for the lines (Prolonger.Horizon).
+            // A few real seconds ahead at this warp, and at least the lines' horizon.
             system.Prolonger.Request(next + Math.Max(Prolonger.Horizon, 3 * simSecondsPerRealSecond));
             using (FrameProfiler.BurnTargets.Measure())
             {
@@ -99,8 +94,6 @@ internal static class DeserializeSavePatch
     }
 }
 
-// After KSA loads a star system, lists its bodies, checks KSA's frames, then
-// builds the Principia ephemeris from it.
 [HarmonyPatch(typeof(Universe), nameof(Universe.LoadSystem))]
 internal static class LoadSystemPatch
 {

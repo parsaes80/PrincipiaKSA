@@ -3,23 +3,16 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// A part of a drawn line inside one body's sphere of influence (KSA's
-// rules), points Start to End, drawn in Frame: for an encounter (entering a
-// moon's sphere from its planet's, say) about the body met, non-rotating, as
-// KSA draws its encounter patches, unless that body is the plotting frame's
-// centre; else in the plotting frame. From and To are its times; Closed,
-// that it ends at a sphere crossing (not where the line ends). An encounter
-// drawn about its body also has its points in the plotting frame
-// (GhostTimes, Ghost), drawn dimmer, so the path shows through there too.
+// A line's part in one sphere of influence (KSA's rules). An encounter is drawn about the body met, as KSA draws its
+// patches, with a dimmer copy in the plotting frame (Ghost); the rest in the plotting frame. Closed: it ends at a
+// sphere crossing, not where the line ends.
 internal sealed record Stretch(int Start, int End, FrameSpec Frame, Astronomical Body, double From, double To,
                                bool Closed, double[]? GhostTimes = null, double3[]? Ghost = null);
 
-// A drawn line: its points, each in its stretch's frame. Where the path
-// changes sphere of influence, a point at the same time ends one stretch and
-// starts the next, so a line is never joined across stretches.
+// Points in their stretch's frame; at a crossing a point at the same time ends one stretch and starts the next.
 internal readonly record struct Line(double[] Times, double3[] Coordinates, Stretch[] Stretches)
 {
-    // Each stretch's frame mapped to Ecl now. Main thread.
+    // Main thread.
     public FrameMapper[] Mappers()
     {
         var mappers = new FrameMapper[Stretches.Length];
@@ -41,7 +34,6 @@ internal readonly record struct Line(double[] Times, double3[] Coordinates, Stre
         return s;
     }
 
-    // The stretch of point i.
     public int StretchOf(int i)
     {
         int s = 0;
@@ -54,7 +46,6 @@ internal readonly record struct Line(double[] Times, double3[] Coordinates, Stre
 
     public double3 ToEcl(FrameMapper[] mappers, int i) => mappers[StretchOf(i)].ToEcl(Coordinates[i]);
 
-    // The point at time t, in Ecl now, within its stretch.
     public double3 EclAt(FrameMapper[] mappers, double t)
     {
         int s = StretchAt(t);
@@ -87,9 +78,7 @@ internal readonly record struct Line(double[] Times, double3[] Coordinates, Stre
     public double3 EclAt(double t) => EclAt(Mappers(), t);
 }
 
-// A finished prediction or flight plan, in the coordinates of the plotting
-// frame it was computed for, and around other bodies where it is in their
-// spheres of influence (Stretches). Immutable once published.
+// A finished prediction or flight plan. Immutable once published.
 internal sealed class Prediction
 {
     public required Vehicle Vehicle { get; init; }
@@ -112,28 +101,21 @@ internal sealed class Prediction
     public required ParentApsides ParentApsides { get; init; }
     public required double[] StateTimes { get; init; }     // The integrated samples, undensified,
     public required QP[] States { get; init; }             // absolute: for directions along the path.
-    // Runs of points inside the frame centre's near-surface radius (the top of
-    // its atmosphere), relative to it (Cce axes), for KSA's danger track.
+    // Runs of points below the frame centre's near-surface radius, relative to it (Cce axes), for KSA's danger track.
     public required (double Time, double3 Relative)[][] Danger { get; init; }
 
-    // Sphere: where the line leaves or enters a sphere of influence; Body:
-    // where the body entered will be then.
+    // Body: where the body met at an encounter will be then.
     public enum MarkerKind { Periapsis, Apoapsis, ClosestApproach, Burn, Sphere, Body, AscendingNode, DescendingNode }
 
-    // An event at Time and Position, in the frame of stretch Stretch. Label
-    // is the full text for lists; the map shows Name, and Altitude or Detail
-    // with a countdown when hovered. Listed: in the window's list too (not a
-    // crossing's second marker, on the next stretch, nor a body's position).
+    // Position in stretch Stretch's frame. Label is for lists; the map shows Name, and Altitude or Detail on hover.
     public sealed record Marker(MarkerKind Kind, double Time, int Stretch, double3 Position, string Label,
                                 string Name, double? Altitude = null, string? Detail = null, bool Listed = true);
 }
 
-// A prediction's apsides about the vessel's parent, in time order, for KSA's
-// Ap and Pe gauges and warp buttons.
+// About the vessel's parent, in time order, for KSA's Ap/Pe gauges and warp buttons.
 internal sealed record ParentApsides(Astronomical Parent, (double Time, double Altitude)[] Periapsides,
                                      (double Time, double Altitude)[] Apoapsides)
 {
-    // The first at or after `now` (s since J2000).
     public (double Time, double Altitude)? Next(bool apoapsis, double now)
     {
         foreach (var a in apoapsis ? Apoapsides : Periapsides)
@@ -147,10 +129,8 @@ internal sealed record ParentApsides(Astronomical Parent, (double Time, double A
     }
 }
 
-// A maneuver node's approach: the path before its burn, from the previous
-// burn to a little past the node, which it is drawn and dragged on. Segment:
-// 0 before the first burn with Δv, j after the j-th. Shared: until when the
-// flight plan follows the same path.
+// The path before a node's burn, which it is drawn and dragged on. Segment: 0 before the first burn with Δv, j after
+// the j-th. Shared: until when the flight plan follows the same path.
 internal sealed record NodeTrack(double Start, double[] Times, double3[] FrameCoordinates, Stretch[] Stretches,
                                  int Segment, double Shared, double[] StateTimes, QP[] States)
 {
@@ -162,7 +142,7 @@ internal sealed record NodeTrack(double Start, double[] Times, double3[] FrameCo
 internal sealed record NodeTracks(Vehicle Vehicle, FrameSpec Frame, IReadOnlyDictionary<Burn, NodeTrack> ByBurn,
                                   IReadOnlyDictionary<Burn, double> Windows)
 {
-    // When they were published (Stopwatch ticks), for the drag log.
+    // Stopwatch ticks, for the drag log.
     public long Computed { get; } = System.Diagnostics.Stopwatch.GetTimestamp();
 
     // Each track once (each node has its own, computed in parallel).
@@ -170,9 +150,7 @@ internal sealed record NodeTracks(Vehicle Vehicle, FrameSpec Frame, IReadOnlyDic
         ByBurn.Values.Distinct(ReferenceEqualityComparer.Instance).Cast<NodeTrack>().ToArray();
 }
 
-// A path between its integrated samples: the cubic Hermite curve through two
-// samples' positions and velocities, as Principia's own downsampling assumes
-// (within Ephemeris.DownsamplingTolerance of the path).
+// The path between samples, as Principia's downsampling assumes: cubic Hermite through positions and velocities.
 internal static class Hermite
 {
     // At fraction u of the interval h (s) from (q0, v0) to (q1, v1).
@@ -199,7 +177,6 @@ internal static class Hermite
         return new QP(Position(q0, v0, q1, v1, h, u), Velocity(q0, v0, q1, v1, h, u));
     }
 
-    // The state at t, within the samples.
     public static QP At(double[] times, QP[] states, double t)
     {
         int i = Array.BinarySearch(times, t);

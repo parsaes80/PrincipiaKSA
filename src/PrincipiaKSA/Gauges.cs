@@ -3,12 +3,8 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// KSA's Ap and Pe gauges and its warp-to-Ap/Pe buttons read the vessel's
-// osculating conic, whose apsides n-body gravity keeps moving (the Sun and
-// Moon shift a high orbit's perigee by thousands of km). While Principia
-// drives, the controlled vessel's show the next apsides of its prediction
-// about its parent; none ahead (or no prediction): the gauge reads 0, which
-// KSA shows blank, and the button has nothing to warp to.
+// KSA's Ap/Pe gauges and warp-to buttons read the osculating conic, whose apsides n-body gravity keeps moving; they
+// show the prediction's next apsides about the parent instead (none: 0, which KSA shows blank).
 internal static class NBodyApsides
 {
     public static bool Applies(Vehicle vehicle) =>
@@ -62,7 +58,6 @@ internal static class GaugeApsidesPatch
     }
 }
 
-// The warp-to-Ap/Pe and warp-to-next-event buttons' times, set each frame from the conic.
 [HarmonyPatch(typeof(Vehicle), nameof(Vehicle.UpdatePerFrameData))]
 internal static class WarpToApsisPatch
 {

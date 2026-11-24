@@ -6,31 +6,21 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Timing, for the log: each frame's work, to explain stutters (FrameProfiler,
-// with KSA's own methods timed by KsaTimingPatches), and each prediction's,
-// to explain slow lines (PredictionTiming).
-
-// Stopwatch ticks as milliseconds.
 internal static class Clock
 {
     public static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 }
 
-// Finds what makes a frame stutter. Sections of code (KSA's per-frame methods,
-// the mod's hooks, the native calls) are timed into three buckets by thread:
-// KSA's main thread, KSA's job threads, and the mod's background threads.
-// At the start of each frame the last frame's totals are taken; a frame much
-// slower than usual is logged with its slowest sections ("[stutter]").
-//
-// Measure a section with `using var _ = FrameProfiler.Something.Measure();`.
+// Finds what makes a frame stutter ("[stutter]"): sections (KSA's methods, the mod's hooks, native calls) are timed into
+// buckets by thread, and a frame much slower than usual is logged with its slowest sections.
+// Measure one with `using var _ = FrameProfiler.Something.Measure();`.
 internal static class FrameProfiler
 {
     // A frame is a stutter from this long, and this many times the usual.
     private const double StutterMs = 80;
     private const double StutterFactor = 3;
-    // At most one report this often; the slow frames between are counted.
+    // At most one report this often; slow frames between are counted.
     private static readonly long ReportInterval = Stopwatch.Frequency;
-    // Sections shorter than this in a stutter aren't listed.
     private const double ListedMs = 0.5;
     private const int ListedPerBucket = 12;
 
@@ -38,7 +28,7 @@ internal static class FrameProfiler
     private static readonly string[] BucketNames =
         ["main thread", "KSA's job threads, summed over threads", "the mod's background threads, finished during the frame"];
 
-    // Every section, in the order defined. Defined first: the fields below use it.
+    // Defined first: the fields below use it.
     private static readonly List<Section> All = new();
 
     public static Section Define(string name)
@@ -143,15 +133,13 @@ internal static class FrameProfiler
         }
     }
 
-    // Timed sections running on this thread, to tell outermost ones from
-    // those nested in them.
+    // To tell outermost sections from nested ones.
     [ThreadStatic] private static int _depth;
     [ThreadStatic] private static bool _background;
 
-    // Marks the calling thread as one of the mod's own, for good.
     public static void MarkBackgroundThread() => _background = true;
 
-    // Marks a thread-pool thread as the mod's while a task runs on it.
+    // A thread-pool thread is the mod's while a task runs on it.
     public readonly struct BackgroundScope : IDisposable
     {
         private readonly bool _was;
@@ -171,8 +159,7 @@ internal static class FrameProfiler
     private static readonly int[] LastCollections = new int[3];
     private static long _lastCorrections;
 
-
-    // Main thread, at the start of each of KSA's frames (Program.OnFrame).
+    // Main thread, at the start of each of KSA's frames.
     public static void FrameStart()
     {
         long now = Stopwatch.GetTimestamp();
@@ -300,7 +287,6 @@ internal static class FrameProfiler
         Log.Warn(text.ToString());
     }
 
-    // What the game was doing: warp, the vessel, the lines.
     private static string Context(long corrections)
     {
         var parts = new List<string> { $"warp ×{Universe.GetSimulationSpeed():G4}" };
@@ -322,16 +308,12 @@ internal static class FrameProfiler
     }
 }
 
-// Finds slow predictions. Each computation (the prediction, the flight plan)
-// times its stages on its own thread: the native Predict calls, split as the
-// library reports them (PredictTimings), and the C# stages around them. A
-// computation slower than SlowMs is logged with the breakdown ("[predict]").
+// A prediction or flight plan slower than SlowMs is logged ("[predict]") with its native and C# stages, timed per thread.
 internal static class PredictionTiming
 {
     private const double SlowMs = 150;
     private static readonly long ReportInterval = Stopwatch.Frequency;
 
-    // This thread's computation.
     [ThreadStatic] private static Dictionary<string, double>? _stages;
     [ThreadStatic] private static PredictTimings _native;
     [ThreadStatic] private static int _nativeCalls, _apsisBodies;
@@ -346,7 +328,6 @@ internal static class PredictionTiming
         _nativeCalls = _apsisBodies = 0;
     }
 
-    // `using (PredictionTiming.Stage("..."))` around a C# stage.
     public static Measurement Stage(string name) => new(name);
 
     public readonly struct Measurement(string name) : IDisposable
@@ -362,7 +343,6 @@ internal static class PredictionTiming
         }
     }
 
-    // After each native Predict on this thread.
     public static void AddNative(in PredictTimings t, int apsisBodies)
     {
         _nativeCalls++;
@@ -377,9 +357,7 @@ internal static class PredictionTiming
         _native.Chunks += t.Chunks;
     }
 
-
-    // Logs the computation if it was slow. `waitedMs`: from its request
-    // (the snapshot of the vessel) to its start.
+    // `waitedMs`: from its request (the vessel's snapshot) to its start.
     public static void End(string what, double totalMs, double waitedMs, Prediction? p)
     {
         if (totalMs < SlowMs)
@@ -434,8 +412,6 @@ internal static class PredictionTiming
     }
 }
 
-// The start of each of KSA's frames: FrameProfiler takes the last frame's
-// times and logs it if it stuttered.
 [HarmonyPatch(typeof(Program), "OnFrame")]
 internal static class FrameStartPatch
 {
@@ -453,9 +429,7 @@ internal static class FrameStartPatch
     }
 }
 
-// Times KSA's own per-frame work, so a stutter report shows KSA's part next to
-// the mod's. Each method is wrapped whole: its time includes the mod's hooks
-// on it and anything it calls.
+// KSA's own per-frame work, for the stutter report; each method's time includes the mod's hooks on it.
 [HarmonyPatch]
 internal static class KsaTimingPatches
 {
@@ -517,7 +491,6 @@ internal static class KsaTimingPatches
             : default;
     }
 
-    // Runs also when the method throws.
     [HarmonyFinalizer]
     private static void Finalizer(FrameProfiler.Measurement __state) => __state.Dispose();
 }

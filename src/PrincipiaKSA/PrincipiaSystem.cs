@@ -4,16 +4,9 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// The n-body system: KSA's bodies as a Principia ephemeris (PrincipiaSystem),
-// integrated ahead of game time in the background (Prolonger), with KSA's
-// spheres of influence over it (Spheres), tidally locked moons fitted to it
-// (TidalLock), and paused in multiplayer (Multiplayer).
-
-// KSA's star system as LINQ can read it.
 internal static class CelestialSystems
 {
-    // Every body of type T. (CelestialSystem.All.OfType is KSA's own, not
-    // LINQ's: a stack-only enumerator, which can only be walked.)
+    // CelestialSystem.All.OfType is KSA's own: a stack-only enumerator, which can only be walked.
     public static List<T> BodiesOf<T>(this CelestialSystem system) where T : class
     {
         var bodies = new List<T>();
@@ -26,24 +19,16 @@ internal static class CelestialSystems
     }
 }
 
-// KSA's star system as a Principia ephemeris: every body with a mass, with
-// its μ, rotation and, where Principia has one, geopotential.
-//
-// KSA's orbits are JPL Horizons elements, which use μ = G(M_parent + M_body);
-// KSA evaluates them with G·M_parent alone, misplacing the Moon by ~2,800 km.
-// The initial states are rebuilt with the summed μ (the Moon is then within
-// 71 km of Principia's JPL ephemeris, see native/tools/sol_reference).
-//
-// The ephemeris starts at UniverseTime 0, so the sky depends only on game
-// time. Coordinates are KSA's ecliptic axes about the barycentre, at rest.
+// KSA's bodies with mass as a Principia ephemeris from UniverseTime 0, so the sky depends only on game time. KSA's
+// orbits are Horizons elements for μ = G(M_parent + M_body) but evaluated with G·M_parent (the Moon ~2,800 km off),
+// so the initial states are rebuilt with the summed μ (then within 71 km of JPL; native/tools/sol_reference).
 internal sealed class PrincipiaSystem : IDisposable
 {
     public static PrincipiaSystem? Current { get; private set; }
 
     private const double NegligibleAngularFrequency = 1e-10;  // rad/s
 
-    // A body whose parent is also integrated: KSA's state for it, relative to
-    // the parent, comes from Principia.
+    // A body whose parent is also integrated.
     public readonly record struct Link(int Index, int ParentIndex, IParentBody Parent);
 
     public Ephemeris Ephemeris { get; }
@@ -57,8 +42,7 @@ internal sealed class PrincipiaSystem : IDisposable
     public string? FailureReason => _failureReason;
     public bool Failed => _failureReason != null;
 
-    // Every client running its own n-body physics would desync a multiplayer
-    // session, so nothing is driven while online.
+    // Each client's own n-body physics would desync a multiplayer session.
     public static bool Online => KSA.Networking.Network.IsOnline;
     public bool Driving => !Failed && !Online;
 
@@ -90,7 +74,6 @@ internal sealed class PrincipiaSystem : IDisposable
 
     public int? IndexOf(Astronomical body) => _index.TryGetValue(body, out int i) ? i : null;
 
-    // A body by its id; null for none (or a null id).
     public Astronomical? Find(string? id) => id == null ? null : Bodies.FirstOrDefault(b => b.Id == id);
 
     public bool TryGetLink(Astronomical body, out Link link) => _links.TryGetValue(body, out link);
@@ -120,15 +103,7 @@ internal sealed class PrincipiaSystem : IDisposable
 
     public void Exit() => Interlocked.Decrement(ref _inFlight);
 
-    // Principia's name for a KSA body in its gravity model.
-    public static string GravityModelName(string ksaId) => ksaId switch
-    {
-        "Sol" => "Sun",
-        "Luna" => "Moon",
-        _ => ksaId,
-    };
-
-    // Replaces Current with an ephemeris of `system` from UniverseTime 0.
+    // Replaces Current.
     public static PrincipiaSystem Build(CelestialSystem system)
     {
         UniverseTime epoch = UniverseTime.FromNanoseconds(0);
@@ -179,9 +154,8 @@ internal sealed class PrincipiaSystem : IDisposable
             modelled += model != null ? 1 : 0;
             if (omega == 0)
             {
-                // KSA doesn't spin this body (the Sun, comets), but Principia
-                // needs a rate: one turn in ~2,000 years. Orient its field by
-                // the model's pole when it has one.
+                // KSA doesn't spin it (the Sun, comets), but Principia needs a rate: a turn in ~2,000 years, about the
+                // model's pole if it has one.
                 omega = NegligibleAngularFrequency;
                 if (model?.Pole is { } modelPole)
                 {
@@ -202,18 +176,15 @@ internal sealed class PrincipiaSystem : IDisposable
         return Current;
     }
 
-    // KSA's data comes first. Principia's gravity model (the real solar
-    // system) only fills in what KSA has none of: a body's gravity field
-    // beyond a point mass and, for a body KSA doesn't spin, its pole. It is
-    // used only for its own bodies: the same name, and μ and mean radius
-    // within 10% of KSA's, so another map's "Earth" stays a point mass.
+    // KSA's data comes first: Principia's gravity model only adds a field (and a pole KSA lacks), for a body of the same
+    // name with μ and radius within 10% of KSA's, so another map's "Earth" stays a point mass.
     private const double ModelTolerance = 0.1;
 
     private readonly record struct ModelBody(string Name, double3? Pole);
 
     private static ModelBody? MatchModel(Astronomical a, IParentBody body, List<string> mismatched)
     {
-        string name = GravityModelName(a.Id);
+        string name = a.Id switch { "Sol" => "Sun", "Luna" => "Moon", _ => a.Id };
         if (Native.GravityModelBody(name, out double mu, out double radius, out double ra, out double dec) !=
             Status.Ok)
         {
@@ -225,22 +196,20 @@ internal sealed class PrincipiaSystem : IDisposable
             mismatched.Add($"{a.Id} (μ ×{mu / body.Mu:G3}, radius ×{radius / a.MeanRadius:G3})");
             return null;
         }
-        return new ModelBody(name, double.IsFinite(ra) && double.IsFinite(dec) ? EclipticPole(ra, dec) : null);
+        if (!double.IsFinite(ra) || !double.IsFinite(dec))
+        {
+            return new ModelBody(name, null);
+        }
+        // The ICRS pole in ecliptic axes.
+        double x = Math.Cos(dec) * Math.Cos(ra), y = Math.Cos(dec) * Math.Sin(ra), z = Math.Sin(dec);
+        return new ModelBody(name, new double3(x, y * Math.Cos(Obliquity) + z * Math.Sin(Obliquity),
+                                               -y * Math.Sin(Obliquity) + z * Math.Cos(Obliquity)));
     }
 
     // IAU 1976 obliquity at J2000, as Horizons' ecliptic uses.
     private const double Obliquity = 84381.448 / 3600 * Math.PI / 180;
 
-    // An ICRS right ascension and declination as a direction in ecliptic axes.
-    private static double3 EclipticPole(double ra, double dec)
-    {
-        double x = Math.Cos(dec) * Math.Cos(ra), y = Math.Cos(dec) * Math.Sin(ra), z = Math.Sin(dec);
-        return new double3(x, y * Math.Cos(Obliquity) + z * Math.Sin(Obliquity),
-                           -y * Math.Sin(Obliquity) + z * Math.Cos(Obliquity));
-    }
-
-    // A body's absolute Ecl state: its parent's plus the two-body state about
-    // it. Fixed stars and bodies orbiting a Barycenter keep KSA's state.
+    // Its parent's plus the two-body state about it; fixed stars and bodies orbiting a Barycenter keep KSA's.
     private static (double3 Q, double3 P) AbsoluteState(
         Astronomical a, UniverseTime t, Dictionary<Astronomical, (double3 Q, double3 P)> memo)
     {
@@ -258,15 +227,14 @@ internal sealed class PrincipiaSystem : IDisposable
         }
         else
         {
-            state = EclState(a, t);
+            state = a is IOrbiter o ? (o.GetPositionEcl(t), o.GetVelocityEcl(t))
+                                    : (a.GetPositionEcl(), a.GetVelocityEcl());  // A fixed star.
         }
         memo[a] = state;
         return state;
     }
 
-    // State relative to the parent, ecliptic axes, from KSA's elements with
-    // μ = G(M_parent + M_body). Orbits with their own central mass in the
-    // system definition are used as they are.
+    // Orbits with their own central mass in the system definition are used as they are.
     private static (double3 Q, double3 P) TwoBodyStateCce(Orbit orbit, double bodyMass, UniverseTime t)
     {
         IParentBody parent = orbit.Parent;
@@ -287,8 +255,7 @@ internal sealed class PrincipiaSystem : IDisposable
         return (sv.PositionCci.Transform(cci2Cce), sv.VelocityCci.Transform(cci2Cce));
     }
 
-    // The rotation KSA draws: pole and prime meridian in Ecl at t, and the
-    // signed spin rate about the pole.
+    // The rotation KSA draws, at t.
     private static (double3 Pole, double3 PrimeMeridian, double AngularFrequency) Rotation(
         IParentBody body, UniverseTime t)
     {
@@ -301,11 +268,6 @@ internal sealed class PrincipiaSystem : IDisposable
         double angle = Math.Atan2(double3.Dot(double3.Cross(m0, m1), pole), double3.Dot(m0, m1));
         return (pole, m0, angle / dt);
     }
-
-    private static (double3 Position, double3 Velocity) EclState(Astronomical a, UniverseTime t) =>
-        a is IOrbiter orbiter
-            ? (orbiter.GetPositionEcl(t), orbiter.GetVelocityEcl(t))
-            : (a.GetPositionEcl(), a.GetVelocityEcl());  // A fixed star.
 
     public static void Clear()
     {
@@ -327,17 +289,13 @@ internal sealed class PrincipiaSystem : IDisposable
     }
 }
 
-// Integrates the ephemeris ahead of game time on a background thread, so
-// that time warp doesn't stall frames.
+// Integrates the ephemeris ahead of game time in the background, so time warp doesn't stall frames.
 internal sealed class Prolonger : IDisposable
 {
-    // Work in bounded chunks so that Dispose doesn't wait for a huge prolong.
+    // So that Dispose doesn't wait for a huge prolong.
     private const double ChunkSeconds = 30 * 86400;
 
-    // How far ahead of game time the planets are kept integrated, so that
-    // lines rarely wait for them: for KSA's 46 bodies a year takes ~2 s of
-    // this thread's time and ~30 MB (0.6 MB per body-year). Lines reaching
-    // further ask for more as they go (Predictor.AheadOfPlanets).
+    // Kept ahead of game time so lines rarely wait: for 46 bodies a year is ~2 s and ~30 MB (0.6 MB per body-year).
     public const double Horizon = 365.25 * 86400;
 
     private readonly PrincipiaSystem _system;
@@ -349,8 +307,7 @@ internal sealed class Prolonger : IDisposable
     public Prolonger(PrincipiaSystem system)
     {
         _system = system;
-        // Below the game's threads: what the game needs next it integrates
-        // itself if this thread is behind (EnsureProlonged).
+        // Below the game's threads, which integrate what they need themselves if this one is behind.
         _thread = new Thread(Run)
         {
             IsBackground = true, Name = "Principia prolong", Priority = ThreadPriority.BelowNormal,
@@ -358,7 +315,7 @@ internal sealed class Prolonger : IDisposable
         _thread.Start();
     }
 
-    // Asks the background thread to integrate up to `t`. Never blocks.
+    // Never blocks.
     public void Request(double t)
     {
         double current = Volatile.Read(ref _target);
@@ -374,7 +331,6 @@ internal sealed class Prolonger : IDisposable
         }
     }
 
-    // Integrates up to `t` on this thread if the background one hasn't.
     public void EnsureProlonged(double t)
     {
         if (_system.Ephemeris.TimeRange.TMax < t)
@@ -422,9 +378,7 @@ internal sealed class Prolonger : IDisposable
     }
 }
 
-// KSA's spheres of influence over Principia's bodies, as KSA moves a vessel
-// between them (FiniteBurnPredictor.CrossedAt): out of a body's sphere into
-// its parent's, into a child's within it. Indices are the ephemeris'.
+// KSA's spheres of influence over the ephemeris' indices, as KSA moves vessels between them (FiniteBurnPredictor.CrossedAt).
 internal sealed class Spheres
 {
     private readonly int[] _parent;      // -1: a root, or a parent Principia doesn't have.
@@ -455,8 +409,7 @@ internal sealed class Spheres
         _children = children.Select(c => c.ToArray()).ToArray();
     }
 
-    // The body a vessel at `position` (absolute, at t) is about, starting from
-    // the one it was about.
+    // The body a vessel at `position` is about, from the one it was about.
     public int Of(Ephemeris ephemeris, int from, double3 position, double t)
     {
         int body = from;
@@ -481,18 +434,14 @@ internal sealed class Spheres
         return body;
     }
 
-    // Whether `body` is a child of `of`, whose sphere it is entered from.
     public bool IsChild(int body, int of) => _parent[body] == of;
 
-    // The body whose sphere `body`'s is in; -1 for none.
+    // -1 for none.
     public int ParentOf(int body) => _parent[body];
 }
 
-// KSA spins a tidally locked body at its Kepler rate, but its n-body mean
-// motion differs (Luna: 27.07 d against the real 27.32 d), so the near side
-// would turn away. Each locked pair's mean motion is fitted from a point-mass
-// integration over up to a year and becomes the spin rate, with the epoch
-// angle shifted so the same face points at the partner.
+// KSA spins a locked body at its Kepler rate, but the n-body mean motion differs (Luna: 27.07 d against 27.32 d) and the
+// near side would turn away: the spin becomes a point-mass fit of the mean motion, the face kept on the partner.
 internal static class TidalLock
 {
     private static readonly AccessTools.FieldRef<Celestial, double> AngularVelocity =
@@ -568,8 +517,7 @@ internal static class TidalLock
         }
     }
 
-    // Bodies whose spin KSA ties to an orbit: moons locked to their parent
-    // (IsTidallyLocked) and planets locked to a moon (Pluto to Charon).
+    // Moons locked to their parent (IsTidallyLocked) and planets locked to a moon (Pluto to Charon).
     private static List<(Celestial Body, Astronomical Partner, double Period)> FindLockedPairs(
         IReadOnlyList<Astronomical> bodies)
     {
@@ -601,7 +549,7 @@ internal static class TidalLock
         return pairs;
     }
 
-    // Direction from `body` to `partner` in Ecl axes per KSA's own orbits.
+    // Per KSA's own orbits.
     private static double3 KsaDirection(Celestial body, Astronomical partner, UniverseTime t)
     {
         if (body.Parent == partner)
@@ -612,8 +560,7 @@ internal static class TidalLock
     }
 }
 
-// While online, n-body driving pauses (the other players follow KSA's
-// conics); back offline, the bodies move to Principia's states again.
+// Online, driving pauses; back offline, the bodies move to Principia's states again.
 internal static class Multiplayer
 {
     private static bool? _wasOnline;

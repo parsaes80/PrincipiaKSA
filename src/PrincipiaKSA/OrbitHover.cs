@@ -5,16 +5,12 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// KSA creates maneuver nodes where the mouse hovers its patched-conic lines.
-// With those hidden, the hover follows Principia's lines instead, handing KSA
-// a point of its own patch at the hovered time, placed on our line. KSA turns
-// a point into a burn time by the next pass through it, which only covers one
-// revolution, so each point handed over carries its exact time (Remember),
-// returned by CrossingTimePatch.
+// KSA creates nodes where the mouse hovers its conic lines; with those hidden, Principia's are hovered, and KSA gets a
+// point of its patch placed on our line. KSA turns a point into a time by its next pass, within one revolution, so
+// each point handed over keeps its exact time (Remember), which CrossingTimePatch returns.
 internal static class OrbitHover
 {
-    // Recent points handed to KSA, by patch and position (which KSA passes on
-    // unchanged), with their exact times.
+    // By patch and position, which KSA passes on unchanged.
     private static readonly Dictionary<(PatchedConic, double3), UniverseTime> Exact = new(new KeyComparer());
     private static readonly Queue<(PatchedConic, double3)> ExactOrder = new();
 
@@ -48,10 +44,7 @@ internal static class OrbitHover
         return position.Patch is { } patch && Exact.TryGetValue((patch, position.Point.PositionCce), out time);
     }
 
-    // Whether the cursor is on the vessel as KSA tests it (Astronomical.
-    // UpdateMouseHover): its marker's box, or its disc when larger. KSA lets
-    // a point of a vessel's own line under the cursor win over the vessel;
-    // ours starts at the vessel, so there the vessel is left to be clicked.
+    // As KSA tests it (Astronomical.UpdateMouseHover). Our line starts at the vessel, which KSA would let it beat.
     public static bool OnVessel(Vehicle vehicle, IViewport viewport, Camera camera, float2 mouse)
     {
         if (!vehicle.CursorHoverEligible)
@@ -110,8 +103,8 @@ internal static class OrbitHover
             {
                 continue;
             }
-            Nearest(line.Line, line.FirstIgnition, mappers, lo, hi, viewport, camera, mouse, size, patch,
-                    ref bestDistance, ref best);
+            Nearest(line.Line, line.FirstIgnition, mappers, lo, hi, camera, mouse, size, patch, ref bestDistance,
+                    ref best);
         }
         if (best is not { } hit)
         {
@@ -128,11 +121,10 @@ internal static class OrbitHover
         return new CelestialPosition(orbit, orbit.Parent, point, chosen);
     }
 
-    // The point of the line between times lo and hi nearest the mouse on
-    // screen, within the grab radius as KSA measures it (Orbit.GetNearestPoint).
-    // Never across a stretch's end: the line isn't joined there.
+    // Nearest the mouse between lo and hi, within the grab radius as KSA measures it (Orbit.GetNearestPoint); never
+    // across a stretch's end, where the line isn't joined.
     public static void Nearest(Line line, int first, FrameMapper[] mappers, double lo, double hi,
-                               IViewport viewport, Camera camera, float2 mouse, int2 size, PatchedConic patch,
+                               Camera camera, float2 mouse, int2 size, PatchedConic patch,
                                ref double bestDistance, ref (double, double3, PatchedConic)? best)
     {
         for (int s = 0; s < line.Stretches.Length; s++)
@@ -234,8 +226,7 @@ internal static class FlightPlanHoverPatch
     }
 }
 
-// Each burn's post-burn patches: the flight plan once a burn with Δv has
-// come, else the prediction.
+// Each burn's post-burn patches: the flight plan after a burn with Δv, else the prediction.
 [HarmonyPatch(typeof(BurnPlan), nameof(BurnPlan.FindNearestBurnPoint))]
 internal static class BurnHoverPatch
 {
@@ -267,8 +258,7 @@ internal static class BurnHoverPatch
                 {
                     continue;
                 }
-                UniverseTime branchEnd =
-                    burn.ParentDepartureBurn ? UniverseTime.EndOfTime : __instance.FindBranchEndTime(i);
+                UniverseTime branchEnd = __instance.FindBranchEndTime(i);
                 if (OrbitHover.Find(line, burn.FlightPlan.Patches, burn.Time, inViewPort, camera, mousePos,
                                     BurnContextMenu.GetGrabRadiusPercent(owner)) is { } position)
                 {
@@ -370,8 +360,7 @@ internal static class BurnMenuSnapPatch
     }
 }
 
-// The time KSA gives a hovered point: ours, exactly, for the points we handed
-// it. (This private method, as TryGetOrbiterCrossingTime may be inlined.)
+// Our exact time for the points we handed KSA. (This private method: TryGetOrbiterCrossingTime may be inlined.)
 [HarmonyPatch(typeof(CelestialPosition), "TryGetVehicleCrossingTime")]
 internal static class CrossingTimePatch
 {

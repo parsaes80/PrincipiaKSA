@@ -3,10 +3,6 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Plotting frames: the kinds (PlotFrame), the bodies one is attached to and
-// coordinates in it (FrameSpec), and those coordinates back to Ecl positions
-// now, for drawing (FrameMapper).
-
 // How predictions are drawn, as in Principia's plotting frames.
 internal enum PlotFrame
 {
@@ -60,23 +56,19 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
         return new FrameSpec(kind, centre, centreIndex, secondary, secondaryIndex);
     }
 
-    // An absolute state in this frame's coordinates (`centre`: the centre's
-    // state at t), its velocity as seen in the frame (less Ω × c in a
-    // rotating one): about the centre in Ecl axes, or in its rotating axes,
-    // or about the pair's barycentre with x towards the secondary and z along
-    // their orbital angular momentum.
+    // An absolute state in this frame (`centre`: the centre's state at t), its velocity as seen in it (less Ω × c when
+    // rotating). Two body: about the barycentre, x towards the secondary, z along their orbital angular momentum.
     public (double3 Position, double3 Velocity) Coordinates(Ephemeris ephemeris, double t, QP state, QP centre)
     {
-        FrameSpec frame = this;
         double3 q = state.Q.ToDouble3(), v = state.P.ToDouble3();
         double3 rel = q - centre.Q.ToDouble3(), relV = v - centre.P.ToDouble3();
-        switch (frame.Kind)
+        switch (Kind)
         {
             case PlotFrame.BodySurface:
             {
-                doubleQuat cce2Ccf = ((IParentBody)frame.Centre).GetCce2Ccf(GameTime.FromSecondsSinceJ2000(t));
+                doubleQuat cce2Ccf = ((IParentBody)Centre).GetCce2Ccf(GameTime.FromSecondsSinceJ2000(t));
                 double3 c = rel.Transform(cce2Ccf);
-                double omega = frame.Centre is Celestial celestial ? celestial.GetAngularVelocity() : 0;
+                double omega = Centre is Celestial celestial ? celestial.GetAngularVelocity() : 0;
                 return (c, relV.Transform(cce2Ccf) - double3.Cross(new double3(0, 0, omega), c));
             }
             case PlotFrame.BarycentricRotating:
@@ -198,8 +190,7 @@ internal sealed record FrameSpec(PlotFrame Kind, Astronomical Centre, int Centre
     }
 }
 
-// Maps a plotting frame's coordinates to Ecl positions now: about each body
-// where it is now, as KSA draws its own orbit lines.
+// A frame's coordinates to Ecl positions now, about each body where it is now, as KSA draws its own orbit lines.
 internal readonly struct FrameMapper
 {
     private readonly double3 _origin, _x, _y, _z;

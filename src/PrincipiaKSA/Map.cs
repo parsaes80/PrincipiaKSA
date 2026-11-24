@@ -5,10 +5,6 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// The map view: Principia's lines (OrbitLines) and their markers (MapOverlay)
-// in place of KSA's patched conics for the controlled vessel (KsaConics).
-
-// The map's colours: the lines', and the markers'.
 internal static class MapColors
 {
     public static readonly byte4 Burn = new(255, 230, 80, 255);
@@ -17,9 +13,7 @@ internal static class MapColors
     public static readonly byte4 Impact = new(255, 60, 60, 255);
     public static readonly byte4 Lagrange = new(255, 150, 40, 255);
 
-    // The prediction orange, then one colour per burn, cycling after ten: hues
-    // at least 80° apart from one segment to the next, as saturated as sRGB
-    // allows at OKLCH lightness 0.66–0.80, no yellows (the burns').
+    // The prediction, then one per burn, cycling: hues ≥ 80° apart, OKLCH lightness 0.66–0.80, no yellow (the burns').
     public static readonly byte4[] Segments =
     {
         new(255, 150, 40, 235),   // Orange: the prediction.
@@ -36,18 +30,16 @@ internal static class MapColors
 
     public static byte4 Coast => Segments[0];
 
-    // Segment s's colour (0: before the first burn).
+    // 0: before the first burn.
     public static byte4 Segment(int s) => Segments[s % Segments.Length];
 
-    // Alphas of what is drawn dimmer: a stretch drawn about another body, as
-    // it goes in the plotting frame (Stretch.Ghost); a node's track.
+    // Alphas of the dimmer lines.
     public const byte Ghost = 110;
     public const byte Track = 120;
 
     public static byte4 Dimmed(byte4 c, byte alpha) => new(c.X, c.Y, c.Z, alpha);
 
-    // The flight plan's colour at point i: yellow under thrust, else its
-    // segment's.
+    // Under thrust, the burns' yellow.
     public static byte4 Plan(Prediction plan, int i)
     {
         int segment = 0;
@@ -65,7 +57,6 @@ internal static class MapColors
         return Segment(segment);
     }
 
-    // The same at time t, for markers.
     public static byte4 PlanAt(Prediction plan, double t)
     {
         int i = Array.BinarySearch(plan.Times, t);
@@ -73,9 +64,7 @@ internal static class MapColors
     }
 }
 
-// Draws Principia's lines with KSA's own 3D orbit-line pass, so planets hide
-// the parts behind them, queued where KSA queues its own (CelestialSystem
-// rather than Universe.OnPreRender, which may be inlined).
+// With KSA's own orbit-line pass, so planets hide what's behind them (here, as Universe.OnPreRender may be inlined).
 [HarmonyPatch(typeof(CelestialSystem), nameof(CelestialSystem.OnPreRender))]
 internal static class OrbitLines
 {
@@ -116,8 +105,6 @@ internal static class OrbitLines
         }
     }
 
-    // A prediction from the vessel on, or a flight plan from its first burn:
-    // a line per stretch, each in its frame.
     private static void Submit(IViewport viewport, Prediction prediction)
     {
         Camera camera = viewport.GetCamera();
@@ -126,8 +113,7 @@ internal static class OrbitLines
         FrameMapper[] mappers = line.Mappers();
         int n = prediction.Times.Length;
         Ensure(n + 1);
-        // From the vessel itself, so the line never lags it between two
-        // predictions; the plan only once its first burn has started.
+        // From the vessel itself, so the line never lags it; the plan only once its first burn has started.
         bool fromVessel = !prediction.IsFlightPlan ||
                           (prediction.FirstIgnition < n && prediction.Times[prediction.FirstIgnition] <= now);
         bool first = true;
@@ -159,9 +145,7 @@ internal static class OrbitLines
         }
     }
 
-    // A stretch drawn about another body, as it goes in the plotting frame:
-    // its colour, dimmer (MapColors.Ghost), as KSA shows the path on through
-    // an encounter.
+    // As KSA shows the path on through an encounter.
     private static void SubmitGhost(IViewport viewport, Prediction prediction, Stretch stretch, double now)
     {
         Camera camera = viewport.GetCamera();
@@ -183,7 +167,6 @@ internal static class OrbitLines
         AddLine(viewport, count);
     }
 
-    // _positions and _colors up to count as one line, if it is one.
     private static void AddLine(IViewport viewport, int count)
     {
         if (count < 2)
@@ -197,10 +180,7 @@ internal static class OrbitLines
         OrbitLinePass.AddLineEnd(viewport);
     }
 
-    // KSA's danger track (Orbit.DrawLines, DangerDisplay.Full): the path's
-    // runs inside the centre's near-surface radius, turned with the body to
-    // the ground they will pass over, in KSA's danger colour, a little nearer
-    // the camera than the path.
+    // KSA's danger track (Orbit.DrawLines): the low runs turned to the ground they will pass over, nearer the camera.
     private static void SubmitDanger(IViewport viewport, Prediction prediction)
     {
         if (prediction.Danger.Length == 0 || prediction.Frame.Centre is not IParentBody body)
@@ -224,17 +204,11 @@ internal static class OrbitLines
                 _positions[count] = (centreEgo + GroundNowCce(body, t, relative)) * 0.998;
                 _colors[count++] = color;
             }
-            if (count < 2)
-            {
-                continue;
-            }
             AddLine(viewport, count);
         }
     }
 
-    // A point relative to `body` (Cce axes) at time t, turned with the body's
-    // rotation to where the ground under it is now (Orbit.
-    // ProjectToCurrentRotationCce): KSA's danger ground track.
+    // Turned with the body to where the ground under it at t is now (as Orbit.ProjectToCurrentRotationCce).
     public static double3 GroundNowCce(IParentBody body, double t, double3 relative)
     {
         doubleQuat cci2Cce = body.GetCci2Cce();
@@ -243,9 +217,7 @@ internal static class OrbitLines
         return ccf.Transform(body.GetCcf2Cci(Universe.GetElapsedTime())).Transform(cci2Cce);
     }
 
-    // The parts of the nodes' approach tracks no bright line shows, dimmer
-    // (MapColors.Track), so a node is always on a line, as KSA draws the whole
-    // orbit it sits on.
+    // The parts no bright line shows, so a node is always on a line, as KSA draws the whole orbit it sits on.
     private static void SubmitNodeTracks(IViewport viewport, NodeTracks nodes)
     {
         Camera camera = viewport.GetCamera();
@@ -314,8 +286,6 @@ internal static class OrbitLines
     }
 }
 
-// The markers of the prediction and the flight plan on the map, hidden behind
-// bodies as the lines are.
 [HarmonyPatch(typeof(Universe), nameof(Universe.OnDrawUi))]
 internal static class MapOverlay
 {
@@ -358,7 +328,6 @@ internal static class MapOverlay
 
     private static readonly string[] LagrangeNames = ["L1", "L2", "L3", "L4", "L5"];
 
-    // The two bodies' Lagrange points, where they stand still: in the "Two body" frame.
     private static void DrawLagrangePoints(IGameViewport viewport, FrameSpec frame)
     {
         Astronomical centre = frame.Centre, secondary = frame.Secondary!;
@@ -368,7 +337,7 @@ internal static class MapOverlay
         double3[] points = FrameSpec.LagrangePoints(mu1, mu2, separation);
         if (frame.Kind == PlotFrame.BodyDirection)
         {
-            // About the centre body, which is mu2 / (mu1 + mu2) of the way from the barycentre, on −x.
+            // The centre body is mu2 / (mu1 + mu2) of the way from the barycentre, on −x.
             var shift = new double3(mu2 / (mu1 + mu2) * separation, 0, 0);
             for (int i = 0; i < points.Length; i++)
             {
@@ -411,8 +380,7 @@ internal static class MapOverlay
         }
     }
 
-    // As KSA's markers: a dot and a name; hovered (KSA's 50 px box for Ap and
-    // Pe, 12 px otherwise), the altitude or detail and a countdown.
+    // As KSA's: hovered within its 50 px box for apsides and nodes, else 12 px.
     private static void DrawMarkers(IGameViewport viewport, Prediction prediction)
     {
         Camera camera = viewport.GetCamera();
@@ -461,40 +429,20 @@ internal static class MapOverlay
                                          Format.Countdown(time - now), c);
         }
 
-        // Only the next Pe, Ap, aN and dN, and every burn and closest approach.
-        bool nextPe = false, nextAp = false, nextAn = false, nextDn = false;
+        // Only the next apsis and node of each kind, but every other marker.
+        var seen = new HashSet<Prediction.MarkerKind>();
         foreach (var marker in prediction.Markers)
         {
-            if (marker.Time < now)
+            bool apsis = marker.Kind is Prediction.MarkerKind.Periapsis or Prediction.MarkerKind.Apoapsis
+                or Prediction.MarkerKind.AscendingNode or Prediction.MarkerKind.DescendingNode;
+            if (marker.Time < now || (apsis && !seen.Add(marker.Kind)))
             {
                 continue;
-            }
-            if (marker.Kind == Prediction.MarkerKind.Periapsis)
-            {
-                if (nextPe) continue;
-                nextPe = true;
-            }
-            else if (marker.Kind == Prediction.MarkerKind.Apoapsis)
-            {
-                if (nextAp) continue;
-                nextAp = true;
-            }
-            else if (marker.Kind == Prediction.MarkerKind.AscendingNode)
-            {
-                if (nextAn) continue;
-                nextAn = true;
-            }
-            else if (marker.Kind == Prediction.MarkerKind.DescendingNode)
-            {
-                if (nextDn) continue;
-                nextDn = true;
             }
             if (Screen(mappers[marker.Stretch].ToEcl(marker.Position)) is not { } at)
             {
                 continue;
             }
-            // On the flight plan, its segment's colour; encounters and
-            // escapes, the line's on the prediction too.
             byte4 color = marker.Kind switch
             {
                 Prediction.MarkerKind.Burn => MapColors.Burn,
@@ -503,17 +451,14 @@ internal static class MapOverlay
                 Prediction.MarkerKind.ClosestApproach => MapColors.Approach,
                 _ => MapColors.Apsis,
             };
-            Draw(at, color, marker.Name, marker.Time, marker.Altitude, marker.Detail,
-                 apsis: marker.Kind is Prediction.MarkerKind.Periapsis or Prediction.MarkerKind.Apoapsis
-                     or Prediction.MarkerKind.AscendingNode or Prediction.MarkerKind.DescendingNode);
+            Draw(at, color, marker.Name, marker.Time, marker.Altitude, marker.Detail, apsis);
         }
         int last = prediction.Times.Length - 1;
         if (prediction.Impact && last >= 0 && Screen(line.ToEcl(mappers, last)) is { } impact)
         {
             Draw(impact, MapColors.Impact, "Impact", prediction.Times[last], null, null, apsis: false);
         }
-        // Where the danger track ends on an impact: the ground it crashes
-        // into, where that ground is now, with an X, in the track's colour.
+        // An X where the danger track ends on an impact: the ground it crashes into, where it is now.
         if (prediction.Impact && prediction.Danger.Length > 0 && prediction.Danger[^1].Length > 0 &&
             prediction.Frame.Centre is IParentBody body)
         {
@@ -537,7 +482,6 @@ internal static class MapOverlay
         }
     }
 
-    // Whether a body lies between the camera and `ecl`.
     internal static bool Occluded(Camera camera, double3 ecl)
     {
         if (PrincipiaSystem.Current is not { } system)
@@ -568,18 +512,14 @@ internal static class MapOverlay
     }
 }
 
-// KSA's patched-conic lines and markers for the controlled vessel, hidden by
-// default while Principia's lines replace them.
 internal static class KsaConics
 {
-    // Whether Principia's lines replace KSA's conics for this vessel: drawing,
-    // hover and node drag then never use the conics. Not while Principia isn't
+    // Principia's lines replace KSA's conics: drawing, hover and node drag never use them. Not while Principia isn't
     // driving (multiplayer), when the conics are the vessel's path.
     public static bool Hidden(Vehicle? vehicle) =>
         !Settings.ShowKsaConics && vehicle != null && vehicle == Program.ControlledVehicle &&
         (Settings.ShowPrediction || Settings.ShowFlightPlan) && PrincipiaSystem.Current is { Driving: true };
 
-    // The vessel's flight plan, or one of its burns' post-burn flight plans.
     public static bool Hidden(FlightPlan plan)
     {
         Vehicle? vehicle = Program.ControlledVehicle;
@@ -595,8 +535,7 @@ internal static class KsaConics
     }
 }
 
-// The orbit lines of the vessel's and its burns' flight plans. (Not
-// Vehicle.AddLineInstances, which gets inlined.)
+// Not Vehicle.AddLineInstances, which gets inlined.
 [HarmonyPatch(typeof(FlightPlan), nameof(FlightPlan.AddLineInstances))]
 internal static class FlightPlanLinesPatch
 {
@@ -615,7 +554,6 @@ internal static class FlightPlanLinesPatch
     }
 }
 
-// The markers on those lines.
 [HarmonyPatch(typeof(FlightPlan), nameof(FlightPlan.DrawUi))]
 internal static class FlightPlanMarkersPatch
 {

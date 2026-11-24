@@ -5,18 +5,15 @@ using Brutal.Numerics;
 
 namespace PrincipiaKSA;
 
-// Mirrors of the structs in native/principia_ksa.h. Same field order and
-// types, so they cross the boundary without copying or conversion.
+// Mirrors of native/principia_ksa.h's structs, laid out alike so they cross the boundary as they are.
 [StructLayout(LayoutKind.Sequential)]
 internal struct XYZ
 {
     public double X, Y, Z;
 
-    public XYZ(double x, double y, double z) => (X, Y, Z) = (x, y, z);
     public XYZ(double3 v) => (X, Y, Z) = (v.X, v.Y, v.Z);
 
     public double3 ToDouble3() => new(X, Y, Z);
-    public override string ToString() => $"({X}, {Y}, {Z})";
 }
 
 // A state: position Q and velocity P.
@@ -93,8 +90,7 @@ internal static unsafe partial class Native
 {
     private const string LibraryName = "principia_ksa";
 
-    // StarMap loads mods in their own load context: find the library next to
-    // our DLL rather than by default probing.
+    // StarMap loads mods in their own load context: find the library next to our DLL, not by default probing.
     public static void RegisterResolver()
     {
         NativeLibrary.SetDllImportResolver(typeof(Native).Assembly, Resolve);

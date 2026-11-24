@@ -4,23 +4,14 @@ using System.Text.Json;
 
 namespace PrincipiaKSA;
 
-// The mod's settings (Settings) and their file, settings.json (SettingsStore).
-
-// The PrincipiaKSA window's settings. The lines' switches, steps and
-// tolerances start from these values at every launch; the rest are kept in
-// settings.json.
+// The window's settings: the lines' switches, steps and tolerances reset every launch; the rest are in settings.json.
 internal static class Settings
 {
-    // The nodes' approach tracks, which reach a given time: a guard against
-    // a runaway only.
+    // Node tracks reach a given time; this only guards against a runaway.
     public const long MaxSteps = 1L << 24;
 
-    // The prediction (the vessel coasting) and the flight plan (through KSA's
-    // burns) are integrated as Principia's: no time, but a tolerance and a
-    // number of steps, from Principia's own choices (ksp_plugin_adapter,
-    // main_window.cs and flight_planner.cs). The prediction runs until its
-    // steps run out; the flight plan's coasts each have up to its steps, the
-    // last (after the last burn) until they run out.
+    // As Principia's (main_window.cs, flight_planner.cs): a tolerance and a number of steps, no time span; each of the
+    // flight plan's coasts gets up to its steps.
     public static readonly double[] PredictionTolerances = [1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2, 1e3, 1e4];
     public static readonly string[] PredictionToleranceNames =
         ["1 mm", "1 cm", "10 cm", "1 m", "10 m", "100 m", "1 km", "10 km"];
@@ -35,14 +26,14 @@ internal static class Settings
     public static readonly long[] PlanStepChoices =
         [1L << 6, 1L << 8, 1L << 10, 1L << 12, 1L << 14, 1L << 16, 1L << 18, 1L << 20];
 
-    // The prediction: the vessel coasting. 1 m, 1,024 steps.
+    // 1 m, 1,024 steps.
     public static bool ShowPrediction = true;
     public static int PredictionToleranceIndex = 3;
     public static int PredictionStepsIndex = 4;
     public static double PredictionTolerance => PredictionTolerances[PredictionToleranceIndex];
     public static long PredictionSteps => PredictionStepChoices[PredictionStepsIndex];
 
-    // The flight plan: through KSA's burns. 1 m, 1,024 steps per coast.
+    // 1 m, 1,024 steps per coast.
     public static bool ShowFlightPlan = true;
     public static int PlanToleranceIndex = 6;
     public static int PlanStepsIndex = 2;
@@ -59,23 +50,17 @@ internal static class Settings
     public static string? CentreBody;     // null: the vessel's parent.
     public static string? SecondaryBody;  // For "Two body"; null: automatic.
 
-    // The window, as KSA's panels (right click on it): shown (else brought
-    // back from StarMap's Mods menu), always on top (when detached), locked
-    // (no moving or resizing), detached (its own OS window).
+    // The window's right-click menu, as KSA's panels.
     public static bool WindowEnabled = true;
     public static bool WindowAlwaysOnTop = true;
     public static bool WindowLocked = false;
     public static bool WindowDetached = false;
 
-    // The mod's log (Principia's included) also to the terminal; it always
-    // goes to PrincipiaKSA.log. Only in settings.json ("log2terminal").
+    // Only in settings.json ("log2terminal").
     public static bool Log2Terminal = false;
 }
 
-// The window's settings, and log2terminal, kept in settings.json next to the
-// mod's DLL: saved a couple of seconds after a change, and at exit (so a file
-// without a key gets it, at its default). The lines' switches, steps and
-// tolerances are not kept: every launch starts from Settings' values.
+// settings.json next to the mod's DLL: saved a couple of seconds after a change, and at exit.
 internal static class SettingsStore
 {
     private sealed class Data
@@ -132,7 +117,7 @@ internal static class SettingsStore
         }
     }
 
-    // Main thread, every frame: write the file a little after a change.
+    // Main thread, every frame.
     public static void Tick()
     {
         string current = JsonSerializer.Serialize(new Data(), Options);

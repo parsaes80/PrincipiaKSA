@@ -23,13 +23,12 @@ public class PrincipiaKSA
     [StarMapImmediateLoad]
     public void Init(Mod definingMod)
     {
-        // First: whether the log also goes to the terminal (log2terminal).
+        // First, as it decides whether the log also goes to the terminal.
         SettingsStore.Load();
         Log.Info("Hello from PrincipiaKSA!");
         Log.Info($"KSA.dll version: {typeof(Mod).Assembly.GetName().Version}");
         Log.Info($"Running on .NET {Environment.Version}, {Environment.OSVersion}");
 
-        // The native library, with Principia's log routed into ours.
         try
         {
             Native.RegisterResolver();
@@ -80,7 +79,7 @@ public class PrincipiaKSA
         _modMenuItem?.Dispose();
         Predictor.Stop();
         SettingsStore.Save();
-        _harmony?.UnpatchAll(HarmonyId);
+        _harmony.UnpatchAll(HarmonyId);
         Log.Info($"Driver totals: {CelestialDriver.StatesServed} states served, " +
                  $"{CelestialDriver.OrbitsRefreshed} orbits rebuilt");
         PrincipiaSystem.Clear();
@@ -89,12 +88,9 @@ public class PrincipiaKSA
     }
 }
 
-// How the mod hooks into KSA (Harmony), and the one helper its transpilers
-// share.
 internal static class Patching
 {
-    // Every patch class in the mod, class by class, so a hook broken by a
-    // game update only disables itself (PatchAll stops at the first failure).
+    // Class by class, so a hook broken by a game update only disables itself (PatchAll stops at the first failure).
     public static void ApplyAll(Harmony harmony)
     {
         foreach (Type type in AccessTools.GetTypesFromAssembly(typeof(PrincipiaKSA).Assembly))
@@ -110,10 +106,8 @@ internal static class Patching
         }
     }
 
-    // A transpiler's work: every call to one of `swaps`' originals becomes a
-    // call to its replacement (a static method with the same arguments, the
-    // instance first). Logs `missing` where there are no such calls, or not
-    // `expected` of them: KSA's code changed under the patch.
+    // Each call to a `swaps` original becomes a call to its static replacement (instance first); logs `missing` when
+    // there are none, or not `expected` of them, as KSA's code changed under the patch.
     public static IEnumerable<CodeInstruction> ReplaceCalls(IEnumerable<CodeInstruction> instructions,
                                                             string missing,
                                                             params (MethodInfo From, MethodInfo To)[] swaps) =>

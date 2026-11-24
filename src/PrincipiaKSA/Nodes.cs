@@ -9,27 +9,16 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Maneuver nodes on Principia's lines: where a node is drawn and how it is
-// dragged (BurnNode), and why, in the log (NodeDiagnostics); its arrows and Δv
-// fields in the plotting frame (BurnAxes).
-
-// Maneuver nodes on Principia's lines. KSA draws a node at its patch's conic
-// at the burn time and drags it along that conic, which far ahead can be
-// thousands of km off the n-body path; with KSA's conics hidden, both follow
-// Principia's path instead. The burn's time and Δv stay KSA's.
+// KSA draws and drags a node on its patch's conic, thousands of km off the n-body path far ahead; with KSA's conics
+// hidden, nodes follow Principia's path instead. The burn's time and Δv stay KSA's.
 internal static class BurnNode
 {
-    // A stretch of n-body path as drawn; Window is how far either side of
-    // the node a drag step may move it.
+    // Window: how far either side of the node a drag step may move it.
     public readonly record struct NodePath(Line Line, double Start, double Window, double[] StateTimes, QP[] States);
 
-    // The path a node lies on: its approach track (the path before its burn),
-    // or, until that arrives, the prediction for a node before the first burn.
-    public static NodePath? Path(Burn burn) => Path(burn, window: true);
-
-    // Without `window`, Window is NaN where it would take the burn's patch,
-    // which BurnAnchor makes from this path.
-    public static NodePath? Path(Burn burn, bool window)
+    // Its track, or until that arrives, the prediction for a node before the first burn. Without `window`, Window is
+    // NaN where it would take the burn's patch, which BurnAnchor makes from this path.
+    public static NodePath? Path(Burn burn, bool window = true)
     {
         if (burn.ParentDepartureBurn || burn.Vehicle is not { } vehicle || !KsaConics.Hidden(vehicle))
         {
@@ -65,14 +54,14 @@ internal static class BurnNode
         return Covers(plan, t) ? plan : Covers(coast, t) ? coast : null;
     }
 
-    // No burn with Δv comes before it: its path is the prediction.
+    // Its path is the prediction.
     private static bool IsFirst(Burn burn) =>
         !burn.Vehicle.BurnPlan.AnyWithDeltaVBefore(burn.Time, inclusive: false, except: burn);
 
     private static bool Covers(Prediction? line, double t) =>
         line is { Times.Length: > 1 } && t >= line.Times[0] && t <= line.Times[^1];
 
-    // Where a node is drawn from, for the log (NodeDiagnostics).
+    // For the log.
     public enum Source { Track, Prediction, FlightPlan, LastDrawn, KsaConic }
 
     private static (double3 Ecl, Source Source)? Ecl(Burn burn)
@@ -88,17 +77,13 @@ internal static class BurnNode
             : null;
     }
 
-    // Where each node was placed last, and from what.
     public static readonly ConditionalWeakTable<Burn, StrongBox<Source>> LastSource = new();
 
     private static void Placed(Burn burn, Source source) =>
         LastSource.AddOrUpdate(burn, new StrongBox<Source>(source));
 
-    // The times at which KSA can hold this burn: it must lie on a patch of the
-    // vessel's plan (first burn) or of the previous burn's still ahead, or KSA
-    // deletes it. Only an impact ends that plan for good: KSA cuts a previous
-    // burn's plan at this burn's ignition but rebuilds it to wherever this
-    // burn moves.
+    // KSA deletes a burn off the patches of the vessel's or the previous burn's plan; only an impact ends that plan for
+    // good, as KSA rebuilds a previous burn's plan to wherever this burn moves.
     public static (double Start, double End) KsaCoverage(Burn burn)
     {
         Vehicle vehicle = burn.Vehicle;
@@ -125,12 +110,10 @@ internal static class BurnNode
         return (GameTime.ToSecondsSinceJ2000(patches[0].StartTime), end);
     }
 
-    // Where each node was last drawn, kept while its time is unchanged, so a
-    // node never falls back to KSA's conic between two predictions.
+    // Kept while the time is unchanged, so a node never falls back to KSA's conic between two predictions.
     private static readonly ConditionalWeakTable<Burn, StrongBox<(UniverseTime Time, double3 Cce)>> Drawn = new();
 
-    // Replaces Burn.PositionCce where KSA places the node: relative to the
-    // parent's position now.
+    // Relative to the parent's position now.
     public static double3 PositionCce(Burn burn)
     {
         try
@@ -161,10 +144,7 @@ internal static class BurnNode
     }
 }
 
-// The node's sphere and handles are placed in UpdateGizmos from
-// Burn.PositionCce, a getter small enough to be inlined, so the call is
-// replaced in UpdateGizmos itself. (They are turned by the frame of the
-// burn's patch at the burn time: Principia's state there, BurnAnchor.)
+// Burn.PositionCce is small enough to be inlined, so it is replaced inside UpdateGizmos.
 [HarmonyPatch(typeof(Burn), nameof(Burn.UpdateGizmos))]
 internal static class BurnGizmoPositionPatch
 {
@@ -178,25 +158,19 @@ internal static class BurnGizmoPositionPatch
     }
 }
 
-// Dragging a node along its orbit. KSA shifts the burn by the time since
-// periapsis of the conic point nearest the cursor, never before the start of
-// the burn's patch, so a node dragged past a sphere-of-influence boundary
-// could not come back. Here the burn's time is set to the time of the
-// nearest point of its path, within its window and its sphere of influence
-// (both ways), and KSA finds the patch for it. Kept from KSA: never in the
-// past or before the previous burn, never past the end of KSA's plan;
-// parent-departure burns stay KSA's.
+// KSA shifts a dragged burn by conic time since periapsis, never before its patch's start, so a node dragged past a
+// sphere boundary couldn't come back. Here it gets the time of its path's point nearest the cursor, within its window
+// and its sphere, never in the past or past the end of KSA's plan.
 [HarmonyPatch(typeof(Burn), nameof(Burn.GizmoPositionLerp))]
 internal static class BurnGizmoDragPatch
 {
-    // How far short of a sphere crossing a node stops (s): well beyond the
-    // crossing's precision (1 ms).
+    // Short of a sphere crossing (s), well beyond its precision (1 ms).
     private const double CrossingMargin = 0.01;
 
-    // How far ahead of now a drag may bring a node (s): at now it would be past at once, with no track to follow.
+    // At now a node would be past at once, with no track to follow (s).
     private const double MinimumLead = 60;
 
-    // The tightest of `bounds` by `pick` (Math.Max for a lower bound), and its name.
+    // The tightest of `bounds` by `pick` (Math.Max for a lower bound), with its name.
     private static (double Value, string Why) Bound(Func<double, double, double> pick,
                                                    params (double Value, string Why)[] bounds)
     {
@@ -236,16 +210,11 @@ internal static class BurnGizmoDragPatch
             double reach = path.Window > 0 ? 0.9 * path.Window : double.PositiveInfinity;
             (double coverStart, double coverEnd) = BurnNode.KsaCoverage(burn);
             Line line = path.Line;
-            // Within its sphere of influence, as KSA keeps a node on its
-            // patch: the burn is about that body, so beyond, its Δv would
-            // mean another burn. It stops just short of an encounter or an
-            // escape: at the crossing itself it would be in the next sphere,
-            // on the next stretch.
+            // Within its sphere, as KSA keeps a node on its patch: beyond, its Δv would mean another burn.
             int s = line.StretchAt(t);
             Stretch stretch = line.Stretches[s];
             double first = s > 0 ? stretch.From + CrossingMargin : stretch.From;
             double last = stretch.Closed ? stretch.To - CrossingMargin : stretch.To;
-            // The bounds, each named for the log.
             (double lo, string loWhy) = Bound(Math.Max, (now + MinimumLead, "a minute from now"), (path.Start, "the start of its path"),
                                               (t - reach, "its drag window"), (coverStart, "the start of KSA's plan"),
                                               (first, "its sphere of influence"));
@@ -261,7 +230,7 @@ internal static class BurnGizmoDragPatch
             FrameMapper[] mappers = line.Mappers();
             double grab = 1.0;  // The whole screen, as KSA's drag.
             (double Time, double3 Ecl, PatchedConic Patch)? hit = null;
-            OrbitHover.Nearest(line, 0, mappers, lo, hi, inViewPort, camera, mouse, inViewPort.Size, burn.Patch,
+            OrbitHover.Nearest(line, 0, mappers, lo, hi, camera, mouse, inViewPort.Size, burn.Patch,
                                ref grab, ref hit);
             if (hit is not { } h)
             {
@@ -295,13 +264,12 @@ internal static class BurnGizmoDragPatch
     }
 }
 
-// Why a maneuver node doesn't follow the cursor, or isn't where it should be
-// ("[node]" in the log). Main thread.
+// Why a node doesn't follow the cursor, or isn't where it should be ("[node]"). Main thread.
 internal static class NodeDiagnostics
 {
     private static readonly long Interval = Stopwatch.Frequency / 2;
 
-    // A drag: each frame's outcome, summed and logged every Interval.
+    // Each drag frame's outcome, summed and logged every Interval.
     private static Burn? _dragged;
     private static long _since, _lastFrame;
     private static readonly Dictionary<string, int> Outcomes = new();
@@ -310,7 +278,6 @@ internal static class NodeDiagnostics
     private static double Now => GameTime.Now;
     private static string Hours(double t) => $"{(t - Now) / 3600:F2} h";
 
-    // One frame of dragging `burn` along its path: what the drag step did.
     public static void Drag(Burn burn, string outcome, BurnNode.NodePath? path = null)
     {
         long now = Stopwatch.GetTimestamp();
@@ -330,7 +297,7 @@ internal static class NodeDiagnostics
         }
     }
 
-    // Logs the drag so far if any frame didn't simply follow the cursor.
+    // Only if a frame didn't simply follow the cursor.
     private static void Flush()
     {
         if (_dragged == null || Outcomes.Count == 0)
@@ -348,7 +315,6 @@ internal static class NodeDiagnostics
         Outcomes.Clear();
     }
 
-    // What the drag works from: the node's track and how old it is.
     private static string Context(Burn burn, BurnNode.NodePath? path)
     {
         var text = new StringBuilder();
@@ -374,14 +340,11 @@ internal static class NodeDiagnostics
         return text.ToString();
     }
 
-    // Each node's placement as last logged, and when.
     private sealed record Placement(string Signature, long Logged);
     private static readonly ConditionalWeakTable<Burn, Placement> Placements = new();
     private static readonly ConditionalWeakTable<Burn, object> Seen = new();
 
-    // After KSA places a node's sphere and arrows: logs where they went
-    // whenever that changes in a way that matters (another source of position,
-    // another body, off screen, not a number).
+    // Logs where KSA placed a node whenever that changes in a way that matters (source, body, off screen, NaN).
     public static void Placed(Burn burn, IViewport viewport)
     {
         if (!viewport.IsMain() || burn.ParentDepartureBurn || burn.Vehicle is not { } vehicle ||
@@ -447,8 +410,7 @@ internal static class NodeDiagnostics
         _ => "KSA's conic (no line covers it)",
     };
 
-    // Where each line, and KSA's own conic, would put the node, as distances
-    // from where it was drawn, with the stretch of each line it is on.
+    // Where each line and KSA's conic would put the node, from where it was drawn.
     private static string Candidates(Burn burn, double t, double3 drawn, IParentBody parent)
     {
         var parts = new List<string>();
@@ -471,7 +433,6 @@ internal static class NodeDiagnostics
         return "candidates: " + string.Join(", ", parts);
     }
 
-    // Where the drawn lines put the vessel at t, if one covers it.
     private static double3? DrawnPosition(Burn burn, double t)
     {
         foreach (Prediction? p in new[] { Predictor.PlanFor(burn.Vehicle), Predictor.PredictionFor(burn.Vehicle) })
@@ -487,7 +448,6 @@ internal static class NodeDiagnostics
     private static bool IsFinite(double3 v) => double.IsFinite(v.X) && double.IsFinite(v.Y) && double.IsFinite(v.Z);
 }
 
-// After KSA places a node's sphere and arrows (Burn.UpdateGizmos).
 [HarmonyPatch(typeof(Burn), nameof(Burn.UpdateGizmos))]
 internal static class BurnGizmoDiagnosticsPatch
 {
@@ -506,7 +466,6 @@ internal static class BurnGizmoDiagnosticsPatch
 }
 
 // A node's prograde/normal/outward in the plotting frame (arrows, drags, KSA's burn fields and buttons); Δv stays KSA's.
-
 internal static class BurnAxes
 {
     // A burn's axes (x prograde, y normal, z outward) to Cce: KSA's and the frame's at the burn, and the frame's as drawn now.
@@ -680,7 +639,8 @@ internal static class BurnFieldsPatch
         {
             if (BurnAxes.Of(burn) is { } axes)
             {
-                _shown = AsDisplayed(BurnAxes.FromKsa(axes, burn.DeltaVVlf));
+                double3 v = BurnAxes.FromKsa(axes, burn.DeltaVVlf);
+                _shown = new(Displayed(v.X), Displayed(v.Y), Displayed(v.Z));
                 return ref _shown;
             }
         }
@@ -694,8 +654,6 @@ internal static class BurnFieldsPatch
     private static double3 ShownValue(Burn burn) => Shown(burn);
 
     // To the six decimals KSA's fields show, without -0, so the path's recomputation noise below them doesn't flicker.
-    private static double3 AsDisplayed(double3 v) => new(Displayed(v.X), Displayed(v.Y), Displayed(v.Z));
-
     private static double Displayed(double x) => Math.Round(x, 6) + 0.0;
 
     private static void Enter(Burn burn, double3 inFrame)

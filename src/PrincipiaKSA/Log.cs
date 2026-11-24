@@ -1,7 +1,6 @@
 namespace PrincipiaKSA;
 
-// Logs to PrincipiaKSA.log next to the mod's DLL, and to the terminal too
-// with log2terminal in settings.json (Settings.Log2Terminal).
+// Logs to PrincipiaKSA.log next to the mod's DLL, and to the terminal with log2terminal.
 internal static class Log
 {
     private static readonly string LogPath =
@@ -21,8 +20,7 @@ internal static class Log
     public static void Warn(string message) => Write("WARN", message);
     public static void Error(string message) => Write("ERROR", message);
 
-    // A warning logged only the first time for its `what`: for code that runs
-    // every frame or step. Any thread.
+    // Only the first failure for each `what`: for code that runs every frame or step.
     public static void WarnOnce(string what, Exception e)
     {
         lock (Warned)

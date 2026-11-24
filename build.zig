@@ -252,15 +252,10 @@ fn nativeModule(b: *Build, t: Build.ResolvedTarget) *Build.Module {
 }
 
 // macOS: hidden symbols stand in for exports.map.
-fn macosFlags(b: *Build) []const []const u8 {
-    return b.allocator.dupe([]const u8, &.{
-        "-include", rootPath(b, "native/macos/include/float_first.h"), "-fvisibility=hidden",
-    }) catch @panic("OOM");
-}
-
 fn platformFlags(b: *Build, t: Build.ResolvedTarget, flags: []const []const u8) []const []const u8 {
     if (!isMacos(t)) return flags;
-    return std.mem.concat(b.allocator, []const u8, &.{ flags, macosFlags(b) }) catch @panic("OOM");
+    const macos: []const []const u8 = &.{ "-include", rootPath(b, "native/macos/include/float_first.h"), "-fvisibility=hidden" };
+    return std.mem.concat(b.allocator, []const u8, &.{ flags, macos }) catch @panic("OOM");
 }
 
 // The dependencies, as Principia's install_deps.sh builds them.
@@ -550,7 +545,10 @@ const Sources = struct {
         var absl_posix: std.ArrayList([]const u8) = .empty;
         const excluded = [_][]const u8{ "_test", "benchmark", "test_", "testutil", "testing", "_mock", "matchers", "gentables", "print_hash_of", "_fuzz", "/flags/", "randen_hwaes.cc" };
         for (try listFiles(b, "extern/abseil-cpp/absl", ".cc", true)) |file| {
-            if (containsAny(file, &excluded)) continue;
+            const skip = for (excluded) |part| {
+                if (std.mem.indexOf(u8, file, part) != null) break true;
+            } else false;
+            if (skip) continue;
             const path = b.fmt("abseil-cpp/absl/{s}", .{file});
             try absl.append(b.allocator, path);
             if (!std.mem.endsWith(u8, file, "_win.cc")) try absl_posix.append(b.allocator, path); // windows.h
@@ -592,11 +590,6 @@ const Sources = struct {
         };
     }
 };
-
-fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
-    for (needles) |needle| if (std.mem.indexOf(u8, haystack, needle) != null) return true;
-    return false;
-}
 
 // The files with `extension` under `dir` (build root relative), sorted,
 // relative to it with '/' separators.
@@ -719,14 +712,6 @@ fn home(b: *Build) []const u8 {
     return b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse ".";
 }
 
-// The Borea launcher's folder.
-fn boreaDir(b: *Build) []const u8 {
-    return if (b.graph.host.result.os.tag == .macos)
-        b.fmt("{s}/Library/Application Support/Borea", .{home(b)})
-    else
-        b.fmt("{s}/.local/share/Borea", .{home(b)});
-}
-
 // Whether `dir` holds `file`. The configure phase is cached: what it found
 // is tracked, so a change (a launcher updating StarMap) configures again.
 fn hasFile(b: *Build, dir: []const u8, file: []const u8) bool {
@@ -738,7 +723,10 @@ fn hasFile(b: *Build, dir: []const u8, file: []const u8) bool {
 // A string in the Borea launcher's settings: `key = "value"` in `[section]`
 // (or before any section if it is ""). Tracked as above.
 fn boreaSetting(b: *Build, section: []const u8, key: []const u8) ?[]const u8 {
-    const path = b.fmt("{s}/borea-settings.toml", .{boreaDir(b)});
+    const path = if (b.graph.host.result.os.tag == .macos)
+        b.fmt("{s}/Library/Application Support/Borea/borea-settings.toml", .{home(b)})
+    else
+        b.fmt("{s}/.local/share/Borea/borea-settings.toml", .{home(b)});
     b.dependOnFileContents(.{ .cwd_relative = path });
     const text = std.Io.Dir.cwd().readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch return null;
     var in_section = section.len == 0;

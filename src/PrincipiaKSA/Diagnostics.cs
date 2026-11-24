@@ -4,11 +4,7 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// The status line every 10 s (Diagnostics) and the startup check
-// of KSA's frames (FrameProbe).
-
-// A status line every 10 seconds: time and warp, how far ahead Principia is,
-// the drivers' work, and how far a few bodies are from KSA's Kepler orbits.
+// A status line every 10 s: time and warp, how far ahead Principia is, the drivers' work, and a few bodies' drift.
 internal static class Diagnostics
 {
     private static readonly long Interval = Stopwatch.Frequency * 10;
@@ -16,7 +12,6 @@ internal static class Diagnostics
     private static long _next;
     private static long _lastStates, _lastRefreshes;
     private static long _lastFlows, _lastFullPhysicsFlows, _lastRebuilds, _lastResyncs, _lastCorrections;
-
 
     public static void Tick()
     {
@@ -75,7 +70,7 @@ internal static class Diagnostics
             }
             Log.Info($"[status] n-body vs KSA's original Kepler orbits: {string.Join(", ", drifts)}");
 
-            // The vessel's osculating elements (equatorial).
+            // Osculating elements, about the parent's equator.
             if (Program.ControlledVehicle is { } vehicle)
             {
                 Orbit o = vehicle.Orbit;
@@ -93,9 +88,7 @@ internal static class Diagnostics
     }
 }
 
-// Startup check of KSA's frames, units, handedness and time against
-// real-world values, which the mapping to Principia relies on.
-//
+// Startup check of KSA's frames, units, handedness and time against real values, which the mapping to Principia needs.
 // KSA's frames:
 //   Ecl  global, ecliptic-aligned axes
 //   Cce  centred on a body, ecliptic-aligned axes (parallel to Ecl)
@@ -111,7 +104,9 @@ internal static class FrameProbe
     {
         UniverseTime t = Universe.GetElapsedTime();
         Log.Info("=== Frame probe ===");
-        LogTime(t);
+        Log.Info($"[time] UniverseTime = {t.Nanoseconds} ns = {t.Seconds():F3} s");
+        Log.Info($"[time] → {GameTime.ToSecondsSinceJ2000(t):F3} s since J2000 = JD {GameTime.ToJulianDay(t):F6} " +
+                 $"≈ {GameTime.ToDateTime(t):yyyy-MM-dd HH:mm:ss} (expect 2025-11-30 at t=0)");
 
         Celestial? earth = Find(system, "Earth");
         Celestial? luna = Find(system, "Luna");
@@ -135,70 +130,56 @@ internal static class FrameProbe
         Log.Info("=== End frame probe ===");
     }
 
-    private static void LogTime(UniverseTime t)
-    {
-        Log.Info($"[time] UniverseTime = {t.Nanoseconds} ns = {t.Seconds():F3} s");
-        Log.Info($"[time] → {GameTime.ToSecondsSinceJ2000(t):F3} s since J2000 = JD {GameTime.ToJulianDay(t):F6} " +
-                 $"≈ {GameTime.ToDateTime(t):yyyy-MM-dd HH:mm:ss} (expect 2025-11-30 at t=0)");
-    }
-
-    // Units and orientation of the ecliptic frame: the orbital angular momentum
-    // h = r × v in Cce must reproduce the XML inclination and node. A mirrored
-    // (left-handed) frame would flip h or give 360° − Ω.
+    // h = r × v in Cce must reproduce the XML inclination and node; a mirrored frame would flip h or give 360° − Ω.
     private static void CheckOrbit(Celestial body, UniverseTime t, double? xmlInclinationDeg, double? xmlNodeDeg)
     {
         double3 r = body.GetPositionCce(t);
         double3 v = body.GetVelocityCce(t);
         double3 h = double3.Cross(r, v);
-        double inclination = Math.Acos(h.Z / Norm(h)) / Deg;
-        double3 node = double3.Cross(double3.UnitZ, h);  // ascending node direction
+        double inclination = Math.Acos(h.Z / h.Length()) / Deg;
+        double3 node = double3.Cross(double3.UnitZ, h);
         double nodeLongitude = Normalize360(Math.Atan2(node.Y, node.X) / Deg);
         double mu = body.Parent.Mu;
-        double a = 1 / (2 / Norm(r) - Dot(v, v) / mu);  // vis-viva
+        double a = 1 / (2 / r.Length() - double3.Dot(v, v) / mu);  // vis-viva
 
-        Log.Info($"[orbit] {body.Id} around {(body.Parent as IObjectId)?.Id}: |r|={Norm(r):E6} m, |v|={Norm(v):F3} m/s, " +
+        Log.Info($"[orbit] {body.Id} around {(body.Parent as IObjectId)?.Id}: |r|={r.Length():E6} m, |v|={v.Length():F3} m/s, " +
                  $"a(vis-viva)={a:E6} m, period={body.Orbit.Period / 86400:F3} d");
         string expected = xmlInclinationDeg is { } xi && xmlNodeDeg is { } xn
-            ? $" | XML i={xi:F4}°, Ω={xn:F4}° → {(Math.Abs(inclination - xi) < 0.01 && Math.Abs(Normalize180(nodeLongitude - xn)) < 0.01 ? "MATCH" : "MISMATCH")}"
+            ? $" | XML i={xi:F4}°, Ω={xn:F4}° → {(Math.Abs(inclination - xi) < 0.01 && Math.Abs(Normalize360(nodeLongitude - xn + 180) - 180) < 0.01 ? "MATCH" : "MISMATCH")}"
             : "";
         Log.Info($"[orbit] {body.Id}: h·Z>0={h.Z > 0} (prograde about +Z), i={inclination:F4}°, Ω={nodeLongitude:F4}°{expected}");
     }
 
-    // StateVectors use the parent's Cci (equatorial for Earth); the rotation
-    // Cci → Cce must map one onto the other.
+    // StateVectors use the parent's Cci (equatorial for Earth); Cci2Cce must map one onto the other.
     private static void CheckCciVsCce(Celestial moon, UniverseTime t)
     {
         double3 cci = moon.GetPositionCci(t);
         double3 cce = moon.GetPositionCce(t);
         double3 cciRotated = cci.Transform(moon.Parent.GetCci2Cce());
-        double angle = Math.Acos(Math.Clamp(Dot(cci, cce) / (Norm(cci) * Norm(cce)), -1, 1)) / Deg;
+        double angle = Math.Acos(Math.Clamp(double3.Dot(cci, cce) / (cci.Length() * cce.Length()), -1, 1)) / Deg;
         Log.Info($"[cci] {moon.Id}: Cci=({Fmt(cci)}) Cce=({Fmt(cce)}) angle between={angle:F3}°");
-        Log.Info($"[cci] {moon.Id}: |Cci·Cci2Cce − Cce| = {Norm(cciRotated - cce):E3} m " +
-                 $"({(Norm(cciRotated - cce) < 1 ? "OK: Cci is the parent's equatorial frame" : "MISMATCH")})");
+        Log.Info($"[cci] {moon.Id}: |Cci·Cci2Cce − Cce| = {(cciRotated - cce).Length():E3} m " +
+                 $"({((cciRotated - cce).Length() < 1 ? "OK: Cci is the parent's equatorial frame" : "MISMATCH")})");
         Log.Info($"[cci] {moon.Id}: Orbit.StateVectors.PositionCci = ({Fmt(moon.Orbit.StateVectors.PositionCci)}) " +
                  $"at t={moon.Orbit.StateVectors.StateTime.Seconds():F3} s");
     }
 
-    // Earth's spin axis must be close to the real J2000 north pole in ecliptic
-    // coordinates, (0, +sin ε, cos ε) (ecliptic longitude 90°: at the June
-    // solstice the pole leans toward the Sun), and the Ccf frame must turn
-    // counter-clockwise about it once per sidereal day. KSA's pole sits at
-    // longitude 89.636° (XML Azimuth −0.3636°), i.e. precessed to 2025: ~0.15°.
+    // Earth's axis should be near the J2000 pole (0, sin ε, cos ε) (KSA's is precessed to 2025, ~0.15° off), and Ccf
+    // should turn counter-clockwise about it once per sidereal day.
     private static void CheckEarthSpin(Celestial earth, UniverseTime t)
     {
         double3 axis = earth.GetRotationAxisCce();
         double3 truePole = new(0, Math.Sin(J2000Obliquity), Math.Cos(J2000Obliquity));
-        double poleError = Math.Acos(Math.Clamp(Dot(axis, truePole) / Norm(axis), -1, 1)) / Deg;
+        double poleError = Math.Acos(Math.Clamp(double3.Dot(axis, truePole) / axis.Length(), -1, 1)) / Deg;
         double omega = earth.GetAngularVelocity();
         Log.Info($"[spin] Earth axis (Cce) = ({axis.X:F6}, {axis.Y:F6}, {axis.Z:F6}); " +
                  $"real J2000 pole = ({truePole.X:F6}, {truePole.Y:F6}, {truePole.Z:F6}); off by {poleError:F3}°");
         Log.Info($"[spin] Earth ω = {omega:E9} rad/s → sidereal day {2 * Math.PI / omega / 3600:F6} h (expect 23.934470)");
 
-        // Track a point on Earth's surface (Ccf X axis) through one hour in Cci.
         UniverseTime t1 = UniverseTime.FromNanoseconds(t.Nanoseconds + (Int128)3600 * UniverseTime.NANOSECONDS_PER_SECOND);
         double3 p0 = double3.UnitX.Transform(earth.GetCcf2Cci(t));
         double3 p1 = double3.UnitX.Transform(earth.GetCcf2Cci(t1));
-        double turned = Math.Atan2(double3.Cross(p0, p1).Z, Dot(p0, p1)) / Deg;
+        double turned = Math.Atan2(double3.Cross(p0, p1).Z, double3.Dot(p0, p1)) / Deg;
         Log.Info($"[spin] Ccf X axis turns {turned:F4}° about +Z(Cci) in 1 h (expect +15.0411° for counter-clockwise)");
     }
 
@@ -217,9 +198,6 @@ internal static class FrameProbe
     private static Celestial? Find(CelestialSystem system, string id) =>
         system.BodiesOf<Celestial>().FirstOrDefault(c => c.Id == id);
 
-    private static double Dot(double3 a, double3 b) => double3.Dot(a, b);
-    private static double Norm(double3 a) => a.Length();
     private static double Normalize360(double deg) => ((deg % 360) + 360) % 360;
-    private static double Normalize180(double deg) => Normalize360(deg + 180) - 180;
     private static string Fmt(double3 a) => $"{a.X:E6}, {a.Y:E6}, {a.Z:E6}";
 }

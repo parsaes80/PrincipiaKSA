@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -8,17 +7,9 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// Vessels under n-body gravity.
-//
-// A coasting vessel's true state (its Track) is integrated by Principia over
-// each step; before KSA evaluates the vessel's conic, the conic is rebuilt as
-// the osculating orbit wherever it is off, so KSA's rails code, SOI changes
-// and readouts run unchanged. The Track carries the motion from step to step,
-// so effects too small for one step still accumulate.
-//
-// Under full physics a vessel gets the rest of the n-body field added to
-// KSA's point-mass gravity (Correction); back on rails, its Track restarts
-// from KSA's state.
+// A coasting vessel's true state (its Track) is integrated by Principia each step, and its conic rebuilt where it is
+// off, so KSA's rails code runs unchanged while effects too small for one step still accumulate. Under full physics
+// the rest of the n-body field is added to KSA's point-mass gravity (Correction).
 internal static class VesselDriver
 {
     private sealed class Track
@@ -31,8 +22,7 @@ internal static class VesselDriver
 
     public static long Flows, FullPhysicsFlows, Rebuilds, Resyncs, Corrections;
 
-    // Before KSA moves a coasting vessel to `nextTime`. Worker threads, one per
-    // vehicle at a time.
+    // Worker threads, one per vehicle at a time.
     public static void BeforeFreefall(VehicleUpdateState vehicleState, UniverseTime nextTime)
     {
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -64,7 +54,9 @@ internal static class VesselDriver
             var fromKsa = new QP(parent0.Q.ToDouble3() + ksa.PositionCci.Transform(cci2Cce),
                                  parent0.P.ToDouble3() + ksa.VelocityCci.Transform(cci2Cce));
             Track track = Tracks.GetOrCreateValue(vehicle);
-            if (track.TimeNs != t0.Nanoseconds || Teleported(track.State, fromKsa, ksa.PositionCci.Length()))
+            // Small differences, as when KSA re-expresses the state about a new parent, aren't a move.
+            if (track.TimeNs != t0.Nanoseconds || (track.State.Q.ToDouble3() - fromKsa.Q.ToDouble3()).Length() >
+                                                  Math.Max(1000, 1e-4 * ksa.PositionCci.Length()))
             {
                 // New, back from physics, loaded, or moved by something else.
                 track.State = fromKsa;
@@ -104,9 +96,7 @@ internal static class VesselDriver
         }
     }
 
-    // The vessel's exact n-body state. Between jobs the track is one step
-    // ahead of KSA's state, so it is accepted up to an hour after
-    // `notBeforeNs`. Main thread, between jobs.
+    // Between jobs the track is a step ahead of KSA's state, so it is accepted up to an hour after `notBeforeNs`.
     public static bool TryGetTrack(Vehicle vehicle, Int128 notBeforeNs, out QP state, out UniverseTime time)
     {
         if (Tracks.TryGetValue(vehicle, out Track? track) && track.TimeNs >= notBeforeNs &&
@@ -121,14 +111,7 @@ internal static class VesselDriver
         return false;
     }
 
-    // Something else moved the vessel. Small differences, as when KSA
-    // re-expresses the state about a new parent, are not that.
-    private static bool Teleported(in QP ours, in QP ksa, double distanceToParent) =>
-        (ours.Q.ToDouble3() - ksa.Q.ToDouble3()).Length() > Math.Max(1000, 1e-4 * distanceToParent);
-
-    // The n-body acceleration less the parent's point-mass gravity KSA already
-    // applies, at `positionBub` (about the parent, in the bubble's axes).
-    // Worker threads.
+    // The n-body acceleration less the point-mass gravity KSA already applies, at `positionBub` (bubble axes).
     public static double3? Correction(IParentBody parent, bool rotatingFrame, double3 positionBub, UniverseTime time)
     {
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -187,10 +170,8 @@ internal static class ApplySingleFreefallMotionPatch
     }
 }
 
-// A coasting vessel inside a full-physics step, where KSA moves it along its
-// conic without the hook above: whenever a step would pass its verified
-// conics, an atmosphere or an impact (often, at high warp), or it shares a
-// bubble.
+// KSA also moves coasting vessels along their conic inside full-physics steps (past their verified conics, an
+// atmosphere or an impact, often at high warp, or sharing a bubble), without the hook above.
 [HarmonyPatch(typeof(PhysicsBubble), "RunUnconstrainedVehicleStep")]
 internal static class RunUnconstrainedVehicleStepPatch
 {
@@ -236,9 +217,7 @@ internal static class RunUnconstrainedVehicleStepPatch
     }
 }
 
-// Forces on a vessel under full physics: the rest of the n-body field on top
-// of KSA's point-mass gravity. Not on ground or water: KSA's terrain is a
-// sphere, so J2's sideways pull would make parked vessels creep.
+// Not on ground or water: KSA's terrain is a sphere, so J2's sideways pull would make parked vessels creep.
 [HarmonyPatch]
 internal static class ComputeDerivativesPatch
 {

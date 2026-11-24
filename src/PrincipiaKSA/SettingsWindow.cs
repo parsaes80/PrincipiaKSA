@@ -5,15 +5,10 @@ using KSA;
 
 namespace PrincipiaKSA;
 
-// The PrincipiaKSA window: status, prediction, plotting frame, flight plan
-// and upcoming events. Drawn as KSA draws its own console windows (Ground
-// Track, Target Track...): KSA's ConsoleStyle chrome, palette and widget
-// style, at the game's interface scale and font.
+// Drawn as KSA draws its console windows (Ground Track, Target Track...), with its ConsoleStyle chrome and widgets.
 internal static class SettingsWindow
 {
-    private static bool _logged;
-
-    // At interface scale 1; KSA's console windows are sized in pixels too.
+    // At interface scale 1.
     private static readonly float2 InitialSize = new(460, 640);
 
     // "Reset" chosen: back to the initial place and size, next frame.
@@ -21,11 +16,6 @@ internal static class SettingsWindow
 
     public static void Draw()
     {
-        if (!_logged)
-        {
-            _logged = true;
-            Log.Info("PrincipiaKSA window is being drawn");
-        }
         if (!Settings.WindowEnabled)
         {
             return;  // Back from StarMap's Mods menu.
@@ -45,12 +35,7 @@ internal static class SettingsWindow
         {
             return;  // Collapsed or hidden: ImGui's End is already called.
         }
-        // As KSA's gauge panels (GaugeCanvas): the contents shrink with the window. Test feature, uncomment to add
-        // float2 size = ImGui.GetWindowSize();
-        // float2 initial = InitialSize * scale;
-        // float fit = Math.Clamp(Math.Min(size.X / initial.X, size.Y / initial.Y), 0.6f, 1f);
         ConsoleStyle.BeginBody();
-        // ConsoleStyle.BeginGaugeHostScope(scale * fit);
         ConsoleStyle.PushWidgetStyle();
         WindowMenu("##PrincipiaKSA body menu");
         PrincipiaSystem? system = PrincipiaSystem.Current;
@@ -59,12 +44,12 @@ internal static class SettingsWindow
         {
             DrawPrediction();
             DrawFrame(system);
-            DrawFlightPlan(system);
+            DrawFlightPlan();
             DrawEvents();
-            DrawDiagnostics();
+            Section("Diagnostics");
+            ImGui.Checkbox("Show KSA's patched conics", ref Settings.ShowKsaConics);
         }
         ConsoleStyle.PopWidgetStyle();
-        //ConsoleStyle.EndGaugeHostScope();
         ConsoleStyle.EndBody();
         // Right click on the title bar or footer too.
         ConsoleStyle.PushWidgetStyle();
@@ -75,8 +60,7 @@ internal static class SettingsWindow
         ConsoleStyle.EndWindow();
     }
 
-    // The menu KSA's panels have on a right click (GaugeCanvas), the same
-    // items in the same order.
+    // As KSA's panels' right-click menu (GaugeCanvas).
     private static void WindowMenu(string id)
     {
         if (!ImGui.BeginPopupContextWindow(id))
@@ -106,7 +90,6 @@ internal static class SettingsWindow
         ImGui.EndPopup();
     }
 
-    // A section, headed as KSA's console windows head theirs.
     private static void Section(string title)
     {
         ImGui.Spacing();
@@ -125,8 +108,6 @@ internal static class SettingsWindow
         }
         else
         {
-            // How far the planets' ephemeris is integrated: it only grows,
-            // to wherever the lines or the game have needed it.
             UniverseTime now = Universe.GetElapsedTime();
             double tMax = system.Ephemeris.TimeRange.TMax;
             double ahead = (tMax - GameTime.ToSecondsSinceJ2000(now)) / 86400;
@@ -156,7 +137,7 @@ internal static class SettingsWindow
         }
     }
 
-    // A choice from a list, as Principia's selectors: − and + step through it.
+    // As Principia's selectors: − and + step through a list.
     private static void Selector(string label, string id, ref int index, int count, string value)
     {
         ImGui.Text(label);
@@ -220,10 +201,7 @@ internal static class SettingsWindow
         }
     }
 
-    // A body to plot about, as KSA's system holds them: each star, then its
-    // planets by distance, then "Asteroids & Dwarf Planets" by distance. A
-    // body with moons is a menu item of its own: clicked, it is picked;
-    // hovered, it opens its moons by distance.
+    // Each star, its planets by distance, then "Asteroids & Dwarf Planets"; a body with moons opens them on hover.
     private static void BodyCombo(PrincipiaSystem system, string label, ref string? selection, string automatic)
     {
         if (!ImGui.BeginCombo(label, selection ?? automatic))
@@ -244,7 +222,6 @@ internal static class SettingsWindow
                 picked = body.Id;
             }
         }
-        // A body, opening its moons on hover if it has any.
         void Item(Astronomical body)
         {
             List<Astronomical> moons = Moons(bodies, body);
@@ -302,22 +279,19 @@ internal static class SettingsWindow
         ImGui.EndCombo();
     }
 
-    // Lighter than any planet (Mercury: 3.3e23 kg): a dwarf planet or an
-    // asteroid (Pluto, Eris: ~1.5e22 kg; Ceres: 9.4e20 kg).
+    // Below Mercury (3.3e23 kg), above Pluto and Eris (~1.5e22 kg).
     private const double PlanetMass = 1e23;
 
     private static bool IsSmall(Astronomical body) => body is IParentBody { Mass: < PlanetMass };
 
-    // The body `body` orbits, if Principia has it.
     private static Astronomical? ParentIn(IReadOnlyList<Astronomical> bodies, Astronomical body) =>
         body is IOrbiter { Parent: Astronomical parent } && bodies.Contains(parent) ? parent : null;
 
-    // What orbits `parent`, nearest first.
     private static IEnumerable<Astronomical> Orbiting(IReadOnlyList<Astronomical> bodies, Astronomical parent) =>
         bodies.Where(b => ReferenceEquals(ParentIn(bodies, b), parent))
               .OrderBy(b => b is IOrbiter o ? o.Orbit.SemiMajorAxis : 0);
 
-    // A planet's moons, nearest first, each followed by its own.
+    // Each followed by its own.
     private static List<Astronomical> Moons(IReadOnlyList<Astronomical> bodies, Astronomical planet)
     {
         var moons = new List<Astronomical>();
@@ -329,8 +303,8 @@ internal static class SettingsWindow
         return moons;
     }
 
-    // KSA's planned burns, read-only: KSA's burn tool is the planner.
-    private static void DrawFlightPlan(PrincipiaSystem system)
+    // Read-only: KSA's burn tool is the planner.
+    private static void DrawFlightPlan()
     {
         Section("Flight plan");
         ImGui.Checkbox("Show flight plan", ref Settings.ShowFlightPlan);
@@ -359,8 +333,7 @@ internal static class SettingsWindow
             string components = $"prograde {dv.X:F1}, normal {dv.Y:F1}, outward {dv.Z:F1}";
             if (burn.ParentDepartureBurn)
             {
-                // The vessel's burn KSA computed for the departure planned on
-                // its parent's orbit, not yet one of its own.
+                // Planned on the parent's orbit, not yet the vessel's own burn.
                 double departure = GameTime.ToSecondsSinceJ2000(burn.ParentDepartureTime);
                 ImGui.Text($"Departure {++shown}: Δv {dv.Length():F1} m/s ({components}), " +
                            $"in {Format.Duration(departure - now)}");
@@ -386,12 +359,6 @@ internal static class SettingsWindow
             ImGui.TextDisabled($"Burn target kept on the n-body trajectory " +
                                $"({BurnTargetRefresher.LastChangeDegrees:F3}° last correction)");
         }
-    }
-
-    private static void DrawDiagnostics()
-    {
-        Section("Diagnostics");
-        ImGui.Checkbox("Show KSA's patched conics", ref Settings.ShowKsaConics);
     }
 
     private const int VisibleEvents = 10;
@@ -426,8 +393,7 @@ internal static class SettingsWindow
             ImGui.TextDisabled("Nothing ahead on the lines.");
             return;
         }
-        // Every event, in a box as tall as them up to VisibleEvents lines,
-        // scrolling beyond.
+        // As tall as the events, up to VisibleEvents lines, then scrolling.
         float line = ImGui.GetTextLineHeightWithSpacing();
         float height = Math.Min(events.Count, VisibleEvents) * line + ImGui.GetStyle().WindowPadding.Y * 2;
         if (ImGui.BeginChild("##upcoming", new float2?(new float2(0, height)), ImGuiChildFlags.Borders,
@@ -442,8 +408,7 @@ internal static class SettingsWindow
     }
 }
 
-// The window, once a frame: KSA's UI pass over the main viewport (StarMap's
-// [StarMapAfterGui] isn't called in this KSA).
+// Once a frame (StarMap's [StarMapAfterGui] isn't called in this KSA).
 [HarmonyPatch(typeof(Universe), nameof(Universe.OnDrawUi))]
 internal static class WindowPatch
 {

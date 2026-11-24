@@ -95,12 +95,10 @@ bool Finite(principia_ksa_XYZ const& v) {
   return Finite(v.x) && Finite(v.y) && Finite(v.z);
 }
 
-// Principia's adaptive integrator, but never appending a state at the time of
-// the previous one. Its last step is clipped to reach t_final; when the step
-// before already landed on t_final up to rounding, the clipped step is below
-// the resolution of the clock, and DiscreteTrajectory CHECKs (aborting the
-// game) on the repeated time. Upstream checks a vanishing step everywhere but
-// there.
+// Principia's adaptive integrator, never appending a state at the previous
+// one's time: a last step clipped to t_final can fall below the clock's
+// resolution, and DiscreteTrajectory CHECKs (aborting the game) on the repeated
+// time.
 class MonotonicIntegrator final
     : public AdaptiveStepSizeIntegrator<Ephemeris<Frame>::NewtonianMotionEquation> {
  public:
@@ -193,9 +191,6 @@ double Dot(principia_ksa_XYZ const& a, principia_ksa_XYZ const& b) {
 principia_ksa_XYZ Cross(principia_ksa_XYZ const& a, principia_ksa_XYZ const& b) {
   return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-principia_ksa_XYZ Scale(double const k, principia_ksa_XYZ const& a) {
-  return {k * a.x, k * a.y, k * a.z};
-}
 
 // A point mass, a RotatingBody, or an OblateBody with the gravity model's
 // geopotential. Null, with `last_error` set, on invalid input.
@@ -213,10 +208,8 @@ std::unique_ptr<MassiveBody const> MakeBody(principia_ksa_Body const& body,
     return std::make_unique<MassiveBody const>(massive_parameters);
   }
 
-  // The pole as right ascension and declination in our frame, and the prime
-  // meridian as an angle from Principia's reference direction, the node of
-  // the equator on the frame's xy plane at right ascension α + 90°
-  // (RotatingBody::biequatorial).
+  // Principia's prime meridian is an angle from the equator's node on the xy
+  // plane, at α + 90° (RotatingBody::biequatorial).
   principia_ksa_XYZ const axis = body.polar_axis;
   double const axis_norm = std::sqrt(Dot(axis, axis));
   if (!Finite(axis) || !Finite(body.prime_meridian) ||
@@ -231,12 +224,14 @@ std::unique_ptr<MassiveBody const> MakeBody(principia_ksa_Body const& body,
          name + ": a rotating body needs a nonzero angular frequency");
     return nullptr;
   }
-  principia_ksa_XYZ const pole = Scale(1 / axis_norm, axis);
-  // Remove any component along the pole from the prime meridian.
+  principia_ksa_XYZ const pole = {
+      axis.x / axis_norm, axis.y / axis_norm, axis.z / axis_norm};
+  // The prime meridian without its component along the pole.
+  double const along = Dot(body.prime_meridian, pole);
   principia_ksa_XYZ const meridian = {
-      body.prime_meridian.x - Dot(body.prime_meridian, pole) * pole.x,
-      body.prime_meridian.y - Dot(body.prime_meridian, pole) * pole.y,
-      body.prime_meridian.z - Dot(body.prime_meridian, pole) * pole.z};
+      body.prime_meridian.x - along * pole.x,
+      body.prime_meridian.y - along * pole.y,
+      body.prime_meridian.z - along * pole.z};
   if (Dot(meridian, meridian) < 1e-12 * Dot(body.prime_meridian, body.prime_meridian)) {
     Fail(PRINCIPIA_KSA_INVALID_ARGUMENT,
          name + ": prime meridian is parallel to the pole");
@@ -290,15 +285,12 @@ struct principia_ksa_Ephemeris {
   std::unique_ptr<Ephemeris<Frame>> ephemeris;
   // Bodies in creation order; owned by `ephemeris`.
   std::vector<not_null<MassiveBody const*>> bodies;
-  // The range in which states can be evaluated (s since J2000), as of the
-  // last prolongation through this API. Principia's own `t_min()` and
-  // `t_max()` take the ephemeris lock, which `Prolong` holds for as long as
-  // it integrates: reading these never waits. `t_max` may lag Principia's,
-  // never lead it.
+  // Principia's range as of the last prolongation here: its own t_min()/t_max()
+  // wait on the lock Prolong holds while it integrates. t_max may lag
+  // Principia's, never lead it.
   mutable std::atomic<double> t_min{0};
   mutable std::atomic<double> t_max{0};
-  // Calls from the game's own work (a vessel's step, its thrust gravity)
-  // using the ephemeris now: prolongation lets them go first (Urgent).
+  // Running calls the game waits on (Urgent): prolongation lets them go first.
   mutable std::atomic<int> urgent{0};
 };
 
@@ -314,7 +306,6 @@ void PublishTimeRange(principia_ksa_Ephemeris const* const e) {
   }
 }
 
-// The calling thread's last Predict, timed (principia_ksa__LastPredictTimings).
 thread_local principia_ksa_PredictTimings predict_timings{};
 
 double MsSince(std::chrono::steady_clock::time_point const start) {
@@ -342,15 +333,10 @@ class Urgent {
   principia_ksa_Ephemeris const* const e_;
 };
 
-// Prolongs the ephemeris to `t` in pieces of six hours each (~1 ms each for
-// KSA's 46 bodies). Principia holds the ephemeris lock while it integrates,
-// and every flow takes it too: one long prolongation (a month of KSA's system
-// with geopotentials takes ~100 ms) would stall every vessel step and the
-// game's frame waiting on them.
-// Releasing the lock between pieces isn't enough: the lock isn't fair, and
-// this thread would take it straight back. So before each piece, the game's
-// waiting calls go first (up to `give_way` per piece, so a steady stream of
-// them can't stop the prolongation).
+// In six-hour pieces (~1 ms each): Principia holds the ephemeris lock while it
+// integrates, and a month (~100 ms) would stall every vessel step. The lock
+// isn't fair, so before each piece the game's waiting calls go first, for up to
+// `give_way` so a steady stream of them can't stop the prolongation.
 absl::Status ProlongInPieces(principia_ksa_Ephemeris const* const e,
                              Instant const& t,
                              principia_ksa_PredictTimings* const timings = nullptr) {
@@ -382,14 +368,12 @@ absl::Status ProlongInPieces(principia_ksa_Ephemeris const* const e,
   }
 }
 
-// Checks `t` against the range in which states can be evaluated; outside it,
-// ContinuousTrajectory would fail a CHECK.
+// Outside the range, ContinuousTrajectory would fail a CHECK.
 principia_ksa_Status CheckTime(principia_ksa_Ephemeris const* const e,
                                double const t) {
   if (!Finite(t)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "time is not finite");
   }
-  // The published range: no lock, and never more than Principia has.
   Instant const t_min = ToInstant(e->t_min.load());
   Instant const t_max = ToInstant(e->t_max.load());
   Instant const instant = ToInstant(t);
@@ -516,8 +500,7 @@ void principia_ksa__SetLogCallback(principia_ksa_LogCallback const callback) {
     if (!absl::log_internal::IsInitialized()) {
       absl::InitializeLog();
     }
-    // Only to the callback: Abseil would also print errors to stderr, and
-    // the mod decides where its log goes (log2terminal).
+    // Not also to stderr: the mod decides where its log goes (log2terminal).
     absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfinity);
     log_sink = new CallbackLogSink;
     absl::AddLogSink(log_sink);
@@ -597,8 +580,7 @@ principia_ksa_Status principia_ksa__EphemerisCreate(
       fixed_step_parameters);
   result->bodies = result->ephemeris->bodies();
 
-  // A fresh ephemeris has no polynomials yet, so nothing can be evaluated;
-  // integrate a little so that `t0` itself is in range.
+  // A fresh ephemeris has no polynomials, so not even t0 is in range yet.
   absl::Status const status = result->ephemeris->Prolong(ToInstant(t0));
   if (!status.ok()) {
     return Fail(PRINCIPIA_KSA_PRINCIPIA_ERROR, std::string(status.message()));
@@ -816,8 +798,8 @@ principia_ksa_Status principia_ksa__FlowMassless(
     *final_state = *initial;
     return PRINCIPIA_KSA_OK;
   }
-  // As Principia's DefaultPsychohistoryParameters, with a bounded step count
-  // so that a pathological orbit can't hang a worker thread.
+  // As Principia's DefaultPsychohistoryParameters, bounded so a pathological
+  // orbit can't hang a thread.
   static Ephemeris<Frame>::AdaptiveStepParameters const parameters(
       MonotonicIntegrator::Get(),
       /*max_steps=*/1'000'000,
@@ -930,12 +912,10 @@ principia_ksa_Status principia_ksa__Predict(
     };
   }
 
-  // The flow goes in chunks of at most a month and `chunk_steps` steps: the
-  // ephemeris is prolonged only as far as the steps go. Each chunk keeps every
-  // step (for the step count and exact apsides), then is copied into the
-  // thinned trajectory returned and forgotten but for its last point, where
-  // the next one starts. Apsides lie between successive points, so none is
-  // lost at a boundary.
+  // In chunks of at most a month and `chunk_steps`, so the ephemeris is
+  // prolonged only as far as the steps go. A chunk keeps every step for exact
+  // apsides, then goes into the thinned trajectory and is forgotten but for its
+  // last point.
   constexpr std::int64_t chunk_steps = 50'000;
   Time const chunk_span = 30 * Day;
   DegreesOfFreedom<Frame> const initial_degrees_of_freedom(
@@ -954,7 +934,6 @@ principia_ksa_Status principia_ksa__Predict(
     }
   }
 
-  // Apsides relative to each requested body.
   std::vector<principia_ksa_Apsis> found;
   auto find_apsides = [&]() {
     if (chunk.size() < 3) {
@@ -998,8 +977,7 @@ principia_ksa_Status principia_ksa__Predict(
     Instant const from = chunk.back().time;
     Instant const target = final_time - from < chunk_span ? final_time
                                                           : from + chunk_span;
-    // The flow would prolong the ephemeris to `target` in one go, holding
-    // its lock throughout; in pieces, nothing else waits long.
+    // The flow would prolong in one go, holding the lock throughout.
     ++predict_timings.chunks;
     auto const prolong_start = std::chrono::steady_clock::now();
     if (target != InfiniteFuture) {
@@ -1062,7 +1040,6 @@ principia_ksa_Status principia_ksa__Predict(
   }
 
   predict_timings.total = MsSince(predict_start);
-  // Into arrays the caller releases with principia_ksa__Free.
   int const n = static_cast<int>(thinned.size());
   *times = static_cast<double*>(std::malloc(sizeof(double) * n));
   *states = static_cast<principia_ksa_QP*>(

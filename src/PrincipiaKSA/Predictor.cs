@@ -1,15 +1,13 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Brutal.Numerics;
 using KSA;
 
 namespace PrincipiaKSA;
 
-// Predicts the controlled vessel's n-body trajectory in the background: the
-// prediction (coasting) on one thread, the flight plan (through KSA's planned
-// burns) on another, each maneuver node's approach track as a thread-pool
-// task once the plan is there. The main thread posts a snapshot every frame;
-// each thread always works on the latest. Principia's ephemeris is made to be
-// flowed from several threads at once.
+// The controlled vessel's n-body lines in the background: the prediction on one thread, the flight plan through KSA's
+// burns on another, then each node's track as a pool task. The main thread posts a snapshot each frame; each thread
+// works on the latest (Principia's ephemeris can be flowed from several threads at once).
 internal static class Predictor
 {
     // ── The results the threads publish, and starting and stopping them ─────────
@@ -18,8 +16,7 @@ internal static class Predictor
     public static volatile Prediction? LatestPlan;  // The flight plan.
     public static volatile NodeTracks? LatestNodes; // The maneuver nodes' approaches.
 
-    // The lines of `vehicle` as shown: null while hidden, not computed yet, or
-    // for another vessel. What everything else reads.
+    // What everything else reads: null while hidden, not computed yet, or for another vessel.
     public static Prediction? PredictionFor(Vehicle? vehicle) =>
         Settings.ShowPrediction && Latest is { } p && p.Vehicle == vehicle ? p : null;
 
@@ -28,7 +25,7 @@ internal static class Predictor
 
     public static NodeTracks? NodesFor(Vehicle? vehicle) => LatestNodes is { } n && n.Vehicle == vehicle ? n : null;
 
-    // The last failure of each part, until it next succeeds.
+    // Until it next succeeds.
     private static string? _snapshotError;
     public static string? LastError => _snapshotError ?? CoastWorker.Error ?? PlanWorker.Error;
 
@@ -73,11 +70,11 @@ internal static class Predictor
                                   long PlanSteps, double PlanTolerance, NodeBurn[] Nodes, bool ShowPlan,
                                   int ParentIndex, Astronomical Parent, TargetPlane? Target)
     {
-        // When the vessel's state was taken (Stopwatch ticks).
+        // Stopwatch ticks.
         public long Requested { get; } = Stopwatch.GetTimestamp();
     }
 
-    // The target's orbital plane about its parent, for the nodes (KSA's aN and dN): its unit normal in Ecl axes.
+    // For aN and dN: the target's orbital plane about its parent, as a unit normal in Ecl axes.
     private sealed record TargetPlane(string Name, double3 Normal, int ParentIndex, Astronomical Parent);
 
     // As KSA: nodes only with a target, on its plane about the body it orbits.
@@ -95,17 +92,14 @@ internal static class Predictor
             : null;
     }
 
-    // A planned burn as the flight computer will fly it: from Ignition, along
-    // a fixed inertial direction, until DeltaV is reached. A burn not yet
-    // targeted also carries its Δv in KSA's prograde/normal/radial frame about
-    // ParentIndex, to be aimed from Principia's state (BurnDirection).
+    // As the flight computer flies it: from Ignition along a fixed direction; a burn not yet targeted also carries its
+    // Δv in KSA's axes about ParentIndex, to be aimed from Principia's state (BurnDirection).
     private sealed record PlannedBurn(double Impulse, double? Ignition, double DeltaV, double3 Direction,
                                       double3? DeltaVVlf = null, int ParentIndex = -1);
 
-    // Engine phases (staging), as KSA's finite-burn planning has them.
+    // Staging, as KSA's finite-burn planning has it.
     private sealed record EnginePhase(double Thrust, double MassFlow, double StartMass, double MaxSeconds);
 
-    // A maneuver node needing an approach track, reaching Window either side.
     private sealed record NodeBurn(Burn Burn, double Time, double Window);
 
     private static readonly long MinInterval = Stopwatch.Frequency / 120;
@@ -158,8 +152,7 @@ internal static class Predictor
         doubleQuat cci2Cce = orbit.Parent.GetCci2Cce();
         var fromKsa = new QP(p.Q.ToDouble3() + sv.PositionCci.Transform(cci2Cce),
                              p.P.ToDouble3() + sv.VelocityCci.Transform(cci2Cce));
-        // The exact n-body state when coasting: KSA's conic is only within the
-        // rebuild tolerances of it, enough to move a circular orbit's apsides.
+        // The exact state: KSA's conic is only within the rebuild tolerances, enough to move a circular orbit's apsides.
         QP state = fromKsa;
         if (VesselDriver.TryGetTrack(vehicle, sv.StateTime.Nanoseconds, out QP track, out UniverseTime trackTime))
         {
@@ -168,8 +161,7 @@ internal static class Predictor
         }
         FlightComputer fc = vehicle.FlightComputer;
         Astronomical[] candidates = Candidates(system, frame.Centre);
-        // About the frame's centre for the markers, the vessel's parent for
-        // KSA's Ap and Pe gauges, the others for closest approaches.
+        // The frame's centre for markers, the parent for KSA's gauges, the others for closest approaches.
         int[] apsisBodies = new[] { frame.CentreIndex, parentIndex }
             .Concat(candidates.Select(c => system.IndexOf(c) ?? -1).Where(i => i >= 0)).Distinct().ToArray();
         Volatile.Write(ref _request, new Request(
@@ -182,9 +174,7 @@ internal static class Predictor
         PlanWorker.Wake();
     }
 
-    // KSA's burns still ahead or being flown, with the direction the flight
-    // computer will hold: its loaded target's, else from the burn's patch,
-    // which has the body and state of Principia's path (BurnAnchor).
+    // Still ahead or being flown, along the flight computer's target, else the burn's (anchored) patch.
     private static PlannedBurn[] Burns(Vehicle vehicle, double now)
     {
         var burns = new List<PlannedBurn>();
@@ -212,8 +202,7 @@ internal static class Predictor
     }
 
     // Each burn's last failure logged, and how often it failed the same way since. Main thread.
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Burn,
-        System.Runtime.CompilerServices.StrongBox<(string Key, int Repeats)>> BurnFailures = new();
+    private static readonly ConditionalWeakTable<Burn, StrongBox<(string Key, int Repeats)>> BurnFailures = new();
 
     // A burn left out of the plan, logged with its failing step whenever the burn, step or error changes; repeats counted.
     private static void LogBurnFailure(Burn burn, BurnTarget? target, double now, string stage, Exception e)
@@ -245,7 +234,6 @@ internal static class Predictor
                  $"time {Hours(burn.Time)}, impulse {Hours(burn.ImpulseTime)}; {targetText}; {anchor}{repeats}: {e}");
     }
 
-    // A burn for the log: its time, Δv and patch.
     private static string Describe(Burn burn, double now)
     {
         string text = $"in {(GameTime.ToSecondsSinceJ2000(burn.Time) - now) / 3600:F1} h, Δv {burn.DeltaVVlf}";
@@ -267,16 +255,14 @@ internal static class Predictor
     }
 
     // Not optimized, so a failure's trace names the KSA call and `stage` the step (a rare divide by zero: hyperbolic, Δv ≈ 0).
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
-                                                System.Runtime.CompilerServices.MethodImplOptions.NoOptimization)]
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
     private static void AddBurn(List<PlannedBurn> burns, Vehicle vehicle, Burn burn, BurnTarget? target, double now,
                                 ref string stage)
     {
         stage = "ParentDepartureBurn";
         if (burn.ParentDepartureBurn)
         {
-            // As KSA previews it, until it is made a vessel burn: on the
-            // vessel's own path at ParentDepartureTime.
+            // As KSA previews it until it is made a vessel burn: on the vessel's path at ParentDepartureTime.
             stage = "departure: ParentDepartureTime";
             double departure = GameTime.ToSecondsSinceJ2000(burn.ParentDepartureTime);
             stage = "departure: FlightPlan.TryFindPatch";
@@ -340,12 +326,8 @@ internal static class Predictor
                                   burn.DeltaVVlf, parentIndex));
     }
 
-    // How far a node's approach track reaches either side of it, and so how
-    // far one drag step may move it (0.9 of it): half its orbit, so that the
-    // node can go anywhere on the orbit at once; unbound, half the time to it.
-    // From 10 min to 60 days: the track is integrated on every update (and
-    // only as far as the planets are, NodeTrackOf), and a drag also stops at
-    // the node's sphere of influence. The track follows the node as it moves.
+    // How far a node's track reaches either side (a drag step: 0.9 of it): half the orbit, so it can go anywhere at once;
+    // unbound, half the time to it. 10 min to 60 days, as the track is integrated every update.
     public static double NodeWindow(Orbit orbit, double ahead)
     {
         double period = orbit.Period;
@@ -353,7 +335,7 @@ internal static class Predictor
         return double.IsFinite(half) ? Math.Clamp(half, 600, 60 * 86400.0) : 3600;
     }
 
-    // Every node still ahead, with or without Δv.
+    // With or without Δv.
     private static NodeBurn[] Nodes(Vehicle vehicle, double now)
     {
         var nodes = new List<NodeBurn>();
@@ -392,8 +374,7 @@ internal static class Predictor
         return phases.ToArray();
     }
 
-    // Bodies whose closest approach is worth showing: the centre body's moons,
-    // and if it is a moon, its planet and sibling moons.
+    // Closest approaches worth showing: the centre's moons, and for a moon, its planet and siblings.
     private static Astronomical[] Candidates(PrincipiaSystem system, Astronomical centre)
     {
         var result = new List<Astronomical>();
@@ -421,8 +402,7 @@ internal static class Predictor
 
     // ── The threads ─────────────────────────────────────────────────────────────
 
-    // The prediction's and the flight plan's threads: permanent, as they run
-    // all the time (a thread costs ~50 µs to start, a pool task ~0.5 µs).
+    // Permanent, as they run all the time (a thread costs ~50 µs to start, a pool task ~0.5 µs).
     private static readonly Worker CoastWorker = new("Principia prediction", "prediction", FrameProfiler.Prediction,
                                                      ComputeAndPublishCoast, () => Latest = null);
     private static readonly Worker PlanWorker = new("Principia flight plan", "flight plan", FrameProfiler.FlightPlan,
@@ -431,15 +411,14 @@ internal static class Predictor
     private static Request? _request;
     private static long _lastRequest;
 
-    // A background thread computing from the latest request whenever there is
-    // a new one: `compute` publishes its result and returns it for the log.
+    // Computes each new request; `compute` publishes its result and returns it for the log.
     private sealed class Worker(string threadName, string what, FrameProfiler.Section profiled,
                                 Func<PrincipiaSystem, Request, Prediction?> compute, Action clear)
     {
         private readonly AutoResetEvent _wake = new(false);
         private Thread? _thread;
 
-        // The last failure, until it next succeeds.
+        // Until it next succeeds.
         public string? Error;
 
         public void Start()
@@ -502,10 +481,20 @@ internal static class Predictor
         }
     }
 
-    private static Prediction? ComputeAndPublishCoast(PrincipiaSystem system, Request r) =>
-        Latest = r.CoastSteps > 0 ? ComputeCoast(system, r) : null;
+    // The vessel coasting until its steps run out.
+    private static Prediction? ComputeAndPublishCoast(PrincipiaSystem system, Request r)
+    {
+        if (r.CoastSteps <= 0)
+        {
+            return Latest = null;
+        }
+        var sw = Stopwatch.StartNew();
+        var trajectory = new Trajectory(r.State, r.Time);
+        trajectory.Extend(system.Ephemeris, r.Time + MaxSpan, r.CoastSteps, r.CoastTolerance, r.ApsisBodies);
+        return Latest = Finish(system, r, trajectory, isFlightPlan: false, firstIgnition: 0, note: null, sw);
+    }
 
-    // The flight plan, and the nodes' tracks with it.
+    // With the nodes' tracks.
     private static Prediction? ComputeAndPublishPlan(PrincipiaSystem system, Request r)
     {
         NodeTracks? nodes = null;
@@ -517,34 +506,23 @@ internal static class Predictor
 
     // ── Integrating: the prediction, the flight plan and the nodes' tracks ──────
 
-    // Burns are integrated as Principia's flight plan integrates them
-    // (DefaultBurnParameters), whatever the steps and tolerance chosen for
-    // the coasts: at most this many steps per engine phase, at 1 m.
+    // As Principia's DefaultBurnParameters, whatever the coasts' settings: per engine phase.
     private const long BurnSteps = 1000;
     private const double BurnTolerance = 1;
 
-    // How far ahead any line may go, steps left or not: the ephemeris it
-    // needs is prolonged that far, which costs memory (twenty years).
+    // Steps left or not, as the ephemeris it needs costs memory.
     public const double MaxSpanYears = 20;
     private const double MaxSpan = MaxSpanYears * 365.25 * 86400;
 
-    // How far past the integrated planets a line may go in one computation,
-    // integrating them itself (~6 ms per day for KSA's 46 bodies), and how far
-    // ahead of where it stopped it asks the background thread to integrate.
+    // How far past the integrated planets a line may go in one computation (they cost ~6 ms per day), and how far
+    // ahead of where it stopped it asks the background thread for.
     private const double AheadOfPlanets = 86400;
     private const double PlanetRequestSeconds = 30 * 86400;
 
-    // How far toward `wanted` a line may be integrated now: no further than
-    // the planets are integrated and a day (integrating them takes ~6 ms per
-    // day for KSA's 46 bodies, far longer than the vessel).
     private static double PlanetsReadyUntil(Ephemeris ephemeris, double wanted) =>
         Math.Min(wanted, ephemeris.TimeRange.TMax + AheadOfPlanets);
 
-    // A line stopped at `reached` for the planets, short of `wanted`: the
-    // background thread is asked to go on, so it grows over the next
-    // computations instead of waiting for the planets now. Only then: a line
-    // that ends on its own (its steps run out) asks for nothing, or every
-    // line wanting up to MaxSpan would integrate the planets twenty years.
+    // Only for a line stopped short for the planets: asking for every line's MaxSpan would integrate twenty years.
     private static void WantPlanets(double reached, double wanted) =>
         PrincipiaSystem.Current?.Prolonger.Request(Math.Min(wanted, reached + PlanetRequestSeconds));
 
@@ -601,7 +579,6 @@ internal static class Predictor
         return nodes;
     }
 
-    // Accumulates segments into one trajectory.
     private sealed class Trajectory
     {
         public readonly List<double> Times = new();
@@ -610,19 +587,16 @@ internal static class Predictor
         public readonly List<Apsis> Apsides = new();
         public readonly List<(double Time, QP State, string Label)> Burns = new();
         public PredictionEnd End = PredictionEnd.ReachedEnd;
-        // Stopped, steps left, where the planets are integrated so far: the
-        // next computation goes further (AheadOfPlanets).
+        // Stopped with steps left where the planets end; the next computation goes further.
         public bool AwaitingPlanets;
-        public long Steps;  // Integrator steps taken, in all.
+        public long Steps;
         public QP Last;
         public double LastTime;
         public bool CollectApsides = true;
 
         public Trajectory(QP state, double t) => (Last, LastTime) = (state, t);
 
-        // Integrates on, as Principia predicts: until `maxSteps` steps at
-        // `tolerance` (m, m/s), time `t` (+∞: no time limit) or a body. End
-        // says why it stopped; returns the steps taken.
+        // Until `maxSteps`, time `t` (+∞: none) or a body; End says why. Returns the steps taken.
         public long Extend(Ephemeris ephemeris, double t, long maxSteps, double tolerance, int[] apsisBodies,
                            double3 direction = default, double thrust = 0, double mass = 0, double massFlow = 0)
         {
@@ -664,21 +638,8 @@ internal static class Predictor
         public bool Reached => End == PredictionEnd.ReachedEnd && !AwaitingPlanets;
     }
 
-    // The prediction: the vessel coasting until its steps run out.
-    private static Prediction ComputeCoast(PrincipiaSystem system, Request r)
-    {
-        var sw = Stopwatch.StartNew();
-        var trajectory = new Trajectory(r.State, r.Time);
-        trajectory.Extend(system.Ephemeris, r.Time + MaxSpan, r.CoastSteps, r.CoastTolerance, r.ApsisBodies);
-        return Finish(system, r, trajectory, isFlightPlan: false, firstIgnition: 0, note: null, sw);
-    }
-
-    // Coasts to each burn's ignition (each coast up to the plan's steps),
-    // burns until its Δv is reached (staging through the engine phases), and
-    // after the last burn coasts on until its steps run out, as Principia's
-    // flight plan. A coast that runs out of steps before the next burn ends
-    // the plan there, as Principia's anomalous manœuvres. Also computes the
-    // nodes' approach tracks.
+    // As Principia's flight plan: coasts to each ignition, burns to its Δv through the engine phases, coasts on after
+    // the last; a coast out of steps before a burn ends the plan, as Principia's anomalous manœuvres.
     private static Prediction? ComputePlan(PrincipiaSystem system, Request r, out NodeTracks? nodes)
     {
         var sw = Stopwatch.StartNew();
@@ -796,8 +757,7 @@ internal static class Predictor
                 pending.Add((r.Burns.Length, segmentStart, trajectory.LastTime));
             }
         }
-        // Each node's track at once, a thread-pool task each: the plan they
-        // start from is done.
+        // A pool task per node track, now that the plan they start from is done.
         var jobs = new List<(NodeBurn Node, Task<NodeTrack?> Track)>();
         foreach (var (segment, startIndex, shared) in pending)
         {
@@ -834,21 +794,16 @@ internal static class Predictor
             : null;
     }
 
-    // A node's approach track: integrated without burns from the plan's last
-    // coast sample before its window, through it. Up to `shared` (the next
-    // burn's ignition) it is the plan itself; past it, the path without that
-    // burn, which nothing else draws. The plan is only read, by any number
-    // of these at once.
+    // Without burns, from the plan's last coast sample before the node's window through it: the plan up to `shared`
+    // (the next ignition), then the path without that burn. The plan is only read, by any number of these at once.
     private static NodeTrack? NodeTrackOf(PrincipiaSystem system, Request r, NodeBurn node, int segment,
                                           Trajectory trajectory, int segmentStart, double shared)
     {
         Ephemeris ephemeris = system.Ephemeris;
         double start, t0;
         QP s0;
-        // Where the track starts partway along the plan, the sphere the plan
-        // is in there: an encounter stretch is drawn about its body, and the
-        // track's must be too, or the node would be drawn elsewhere (about the
-        // Sun at Saturn's place then, not at Saturn).
+        // Starting partway along the plan, in the plan's sphere there: an encounter is drawn about its body, and the
+        // track's must be too, or the node would be drawn elsewhere (about the Sun at Saturn's place, not at Saturn).
         (int Body, bool Encounter)? sphere = null;
         if (trajectory.Times.Count == 0)
         {
@@ -894,11 +849,7 @@ internal static class Predictor
                              p.States);
     }
 
-    // A burn's direction: its Δv in the prograde/normal/radial frame of
-    // Principia's state at the burn time, about the burn's body (where
-    // Principia's path is then, BurnAnchor). The plan has reached the
-    // ignition; the burn time is a short coast on. A burn KSA already targets
-    // keeps KSA's direction.
+    // Its Δv in the axes of Principia's state at the burn time, about the burn's body; KSA's for a targeted burn.
     private static double3 BurnDirection(Ephemeris ephemeris, PlannedBurn burn, Trajectory trajectory)
     {
         if (burn.DeltaVVlf is not { } vlf || burn.ParentIndex < 0)
@@ -929,9 +880,7 @@ internal static class Predictor
         return burn.Direction;
     }
 
-    // Where a sequence of burns is in the engine phases: the phase, the mass,
-    // and the seconds already burned in that phase. A value: copy it to look
-    // ahead (Duration).
+    // Where a sequence of burns is in the engine phases; a value, copied to look ahead (Duration).
     private struct Engines(EnginePhase[] phases, double mass)
     {
         public int Phase;
@@ -940,8 +889,7 @@ internal static class Predictor
 
         public readonly bool Done => Phase >= phases.Length;
 
-        // The next stretch of thrust toward `deltaV`: up to the end of the
-        // current phase, or less where the Δv is reached first.
+        // Toward `deltaV`, up to the end of the current phase.
         public readonly (EnginePhase Engine, double Seconds, bool PhaseEnds) Next(double deltaV)
         {
             EnginePhase e = phases[Phase];
@@ -950,8 +898,7 @@ internal static class Predictor
             return seconds >= left ? (e, left, true) : (e, seconds, false);
         }
 
-        // Burns `seconds` of `e`, staging to the next phase where it ends;
-        // returns the Δv gained.
+        // Returns the Δv gained, staging where the phase ends.
         public double Burn(EnginePhase e, double seconds, bool phaseEnds)
         {
             double gained = DeltaV(e.Thrust, e.MassFlow, Mass, seconds);
@@ -969,7 +916,6 @@ internal static class Predictor
             return gained;
         }
 
-        // How long reaching `deltaV` takes from here, rocket equation, phase by phase.
         public readonly double Duration(double deltaV)
         {
             Engines ahead = this;
@@ -988,7 +934,7 @@ internal static class Predictor
         }
     }
 
-    // The rocket equation: the seconds to gain `deltaV`, and the Δv gained in `seconds`.
+    // The rocket equation.
     private static double BurnSeconds(double thrust, double massFlow, double mass, double deltaV)
     {
         if (massFlow <= 0)
@@ -1005,14 +951,12 @@ internal static class Predictor
 
     // ── From samples to lines: frames, spheres of influence, markers ────────────
 
-    // Frame coordinates, impact, apsides and closest approaches.
     private static Prediction Finish(PrincipiaSystem system, Request r, Trajectory trajectory, bool isFlightPlan,
                                      int firstIgnition, string? note, Stopwatch sw)
     {
         Ephemeris ephemeris = system.Ephemeris;
         FrameSpec frame = r.Frame;
         double radius = frame.Centre.MeanRadius;
-        // End the line where it meets the centre body's surface.
         bool impact;
         using (PredictionTiming.Stage("impact search"))
         {
@@ -1040,19 +984,15 @@ internal static class Predictor
         var markersTiming = PredictionTiming.Stage("markers");
         var markers = new List<Prediction.Marker>();
         double endTime = n > 0 ? trajectory.Times[n - 1] : r.Time;
-        // A point in the frame of stretch s (by default the one at time t).
-        (int Stretch, double3 Position) Place(double t, double3 q, int s = -1)
+        // In the frame of stretch s, by default the one at time t.
+        Prediction.Marker Marker(Prediction.MarkerKind kind, double t, double3 q, string label, string name,
+                                 double? altitude = null, string? detail = null, int s = -1, bool listed = true)
         {
             s = s < 0 ? line.StretchAt(t) : s;
             FrameSpec f = line.Stretches[s].Frame;
             QP centre = ephemeris.State(f.CentreIndex, t);
-            return (s, f.Coordinates(ephemeris, t, new QP(q, double3.Zero), centre).Position);
-        }
-        Prediction.Marker Marker(Prediction.MarkerKind kind, double t, double3 q, string label, string name,
-                                 double? altitude = null, string? detail = null, int s = -1, bool listed = true)
-        {
-            (int stretch, double3 position) = Place(t, q, s);
-            return new(kind, t, stretch, position, label, name, altitude, detail, listed);
+            double3 position = f.Coordinates(ephemeris, t, new QP(q, double3.Zero), centre).Position;
+            return new(kind, t, s, position, label, name, altitude, detail, listed);
         }
         foreach (var (time, state, label) in trajectory.Burns)
         {
@@ -1064,14 +1004,10 @@ internal static class Predictor
                                    colon < 0 ? label : label[..colon], detail: colon < 0 ? null : label[(colon + 2)..]));
             }
         }
-        // Where the line leaves one sphere of influence (at the end of its
-        // stretch) and enters the next (at the start of the next), and on an
-        // encounter, where the body will be then, as KSA marks its patches.
+        // As KSA marks its patches: where the line leaves a sphere and enters the next, and where a body met will be.
         Spheres spheres = system.Spheres;
-        // Each visit to a sphere is numbered: an encounter starts the next,
-        // the escape ending it shares its number. Spheres nest, so leaving a
-        // moon's back into its planet's is no new visit of the planet; where
-        // the line starts, that body's sphere and those around it are visit 1.
+        // Visits to a sphere are numbered, an encounter starting the next; leaving a moon's back into its planet's is no
+        // new visit, and where the line starts, that sphere and those around it are visit 1.
         var visits = new Dictionary<int, int>();
         if (line.Stretches.Length > 0 && system.IndexOf(line.Stretches[0].Body) is int first)
         {
@@ -1097,9 +1033,7 @@ internal static class Predictor
                 continue;
             }
             Astronomical from = system.Bodies[c.From], to = system.Bodies[c.To];
-            // As KSA names them: into a moon's sphere, "Luna Encounter"; out
-            // of it, "Luna Escape" (and "Earth Escape" out to the Sun); with
-            // the visit's number where the line visits that sphere twice or more.
+            // As KSA names them ("Luna Encounter", "Luna Escape"), numbered when a sphere is visited twice or more.
             string number = visits[body] > 1 ? $" {visit}" : "";
             string name = encounter ? $"{to.Id} Encounter{number}" : $"{from.Id} Escape{number}";
             string detail = encounter ? $"into {to.Id}'s sphere of influence"
@@ -1206,8 +1140,7 @@ internal static class Predictor
             .ToArray();
     }
 
-    // The runs of the path inside the centre's near-surface radius, as KSA's
-    // danger zone (IParentBody.GetNearSurfaceRadius), every few seconds.
+    // Runs inside the centre's near-surface radius, KSA's danger zone, sampled this often (s).
     private const double DangerStep = 4;
 
     private static (double, double3)[][] Danger(FrameSpec frame, List<double> times, QP[] relative)
@@ -1253,18 +1186,10 @@ internal static class Predictor
         return runs.ToArray();
     }
 
-    // Where a path goes from one sphere of influence into another.
     private readonly record struct Crossing(double Time, QP State, int From, int To);
 
-    // A path's points to draw: split where it changes sphere of influence, at
-    // the crossing found between the samples, each stretch in its frame
-    // (Stretch: about the body met for an encounter, as KSA draws its
-    // encounter patches, else the plotting frame), densified; with `ghosts`,
-    // an encounter also dimmer in the plotting frame. Also each sample's
-    // index among the points. A path that continues another partway (a node's
-    // track) gives `start`, the sphere the other is in there and whether it
-    // entered it by an encounter (SphereAt), so that its first stretch is
-    // drawn in the same frame as there.
+    // Split into stretches at sphere crossings, each in its frame (see Stretch), densified, with each sample's index among
+    // the points. A path continuing another partway (a node's track) gives `start`, the other's sphere there (SphereAt).
     private static (Line Line, int[] Index, List<Crossing> Crossings) Draw(
         PrincipiaSystem system, FrameSpec plot, IReadOnlyList<double> times, IReadOnlyList<QP> states, int n,
         bool ghosts = false, (int Body, bool Encounter)? start = null)
@@ -1283,15 +1208,12 @@ internal static class Predictor
         var stretches = new List<Stretch>();
         var crossings = new List<Crossing>();
         var index = new int[Math.Max(n, 1)];
-        // The stretch being built: its samples, and which of them are the
-        // trajectory's (-1: a crossing).
+        // The stretch being built, and which samples are the trajectory's (-1: a crossing).
         var pieceTimes = new List<double>();
         var pieceStates = new List<QP>();
         var pieceSamples = new List<int>();
         int pieceBody = n > 0 ? body[0] : plot.CentreIndex;
-        // Whether the stretch being built began with an encounter: from a
-        // body's sphere into one of its moons' (or planets'). For the first,
-        // as the path it continues has it.
+        // Began with an encounter (into a moon's sphere); for the first, as the path it continues.
         bool pieceEncounter = start is { } s && s.Body == pieceBody && s.Encounter;
 
         void Add(double t, QP state, int sample)
@@ -1302,10 +1224,7 @@ internal static class Predictor
         }
         void Close(bool closed)
         {
-            // About its body only for an encounter, as KSA draws the
-            // encounter patch about the body met; anything else (where the
-            // vessel is now, back out of an encounter, an escape) in the
-            // plotting frame chosen.
+            // About its body only for an encounter, as KSA draws it; anything else in the plotting frame.
             FrameSpec frame = pieceEncounter && pieceBody != plot.CentreIndex
                 ? new FrameSpec(PlotFrame.BodyCentred, system.Bodies[pieceBody], pieceBody, null, -1)
                 : plot;
@@ -1319,7 +1238,6 @@ internal static class Predictor
             }
             int budget = Math.Max(1000, (int)((long)Budget * m / Math.Max(n, 1)));
             (double[] dt, double3[] dp, int[] di) = Densify(pieceTimes, coordinates, velocities, m, budget);
-            // The same stretch in the plotting frame, to draw dimmer.
             double[]? ghostTimes = null;
             double3[]? ghost = null;
             if (ghosts && frame != plot && m > 1)
@@ -1387,8 +1305,7 @@ internal static class Predictor
         return (new Line(pointTimes.ToArray(), points.ToArray(), stretches.ToArray()), index, crossings);
     }
 
-    // The sphere a path is in at sample `k`, and whether it entered it by an
-    // encounter, as Draw finds them drawing the whole path.
+    // As Draw finds them along the whole path.
     private static (int Body, bool Encounter) SphereAt(PrincipiaSystem system, FrameSpec plot,
                                                        IReadOnlyList<double> times, IReadOnlyList<QP> states, int k)
     {
@@ -1408,10 +1325,8 @@ internal static class Predictor
         return (body, encounter);
     }
 
-    // Long predictions are sampled coarsely, which would draw polygonal, so
-    // each interval is split along the Hermite curve of its end points until
-    // the path turns at most MaxTurn per piece (within Budget points). Returns
-    // the dense times and points, and each sample's index among them.
+    // Coarse samples would draw polygonal: intervals are split along the Hermite curve until the path turns at most MaxTurn
+    // per piece, within Budget points.
     private const double MaxTurn = 3 * Math.PI / 180;
     private const int Budget = 60000;
 
@@ -1431,7 +1346,10 @@ internal static class Predictor
             for (int i = 0; i < n - 1; i++)
             {
                 double dt = times[i + 1] - times[i];
-                double a = Angle(velocities[i], velocities[i + 1]);
+                double norms = velocities[i].Length() * velocities[i + 1].Length();
+                double a = norms > 0
+                    ? Math.Acos(Math.Clamp(double3.Dot(velocities[i], velocities[i + 1]) / norms, -1, 1))
+                    : double.NaN;
                 pieces[i] = dt > 0 && double.IsFinite(a) ? (int)Math.Clamp(Math.Ceiling(a / maxTurn), 1, 64) : 1;
                 total += pieces[i];
             }
@@ -1464,26 +1382,15 @@ internal static class Predictor
         return (denseTimes, densePositions, index);
     }
 
-    private static double Angle(double3 a, double3 b)
-    {
-        double norms = a.Length() * b.Length();
-        return norms > 0 ? Math.Acos(Math.Clamp(double3.Dot(a, b) / norms, -1, 1)) : double.NaN;
-    }
-
     // ── Where a line meets the ground ───────────────────────────────────────────
 
-    // Where a trajectory first meets the surface of the frame's centre body as
-    // KSA draws it. Principia integrates through bodies and the samples can be
-    // minutes apart, so each stretch that dips below the highest terrain is
-    // walked on a fine grid along the cubic Hermite spline between its two
-    // samples, which keeps within the points' 10 m tolerance of the path
-    // (Ephemeris.DownsamplingTolerance), and the crossing interpolated.
+    // Principia integrates through bodies with samples minutes apart, so each interval dipping below the highest terrain is
+    // walked finely along its Hermite curve (within 10 m of the path) to the surface KSA draws.
     private static class Impact
     {
         private const int Points = 4000;       // Per stretch between two samples.
         private const int MaxStretches = 64;   // An orbit skimming the terrain dips every revolution.
 
-        // Ends `trajectory` at its first impact; true if there is one.
         public static bool Truncate(Ephemeris ephemeris, FrameSpec frame, Trajectory trajectory)
         {
             int n = trajectory.Times.Count;
@@ -1529,7 +1436,6 @@ internal static class Predictor
             return trajectory.End == PredictionEnd.Collision;
         }
 
-        // Keeps the first `keep` samples and appends the impact.
         private static void Cut(Trajectory trajectory, int keep, double time, QP state)
         {
             int n = trajectory.Times.Count;
@@ -1578,8 +1484,7 @@ internal static class Predictor
         }
     }
 
-    // A body's surface as KSA draws it: the mean radius plus the height map in
-    // that direction, never below sea level where there is an ocean.
+    // As KSA draws it: the mean radius plus the height map, never below sea level where there is an ocean.
     private readonly struct Surface
     {
         private readonly Astronomical _body;
@@ -1606,7 +1511,6 @@ internal static class Predictor
             }
         }
 
-        // Height above the surface at `state`; negative below it.
         public double Height(Ephemeris ephemeris, int centre, double t, QP state)
         {
             double3 relative = state.Q.ToDouble3() - ephemeris.State(centre, t).Q.ToDouble3();
