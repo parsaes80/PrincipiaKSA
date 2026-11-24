@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Brutal.Numerics;
 using KSA;
 
@@ -186,53 +185,24 @@ internal static class Predictor
             {
                 continue;
             }
-            string stage = "start";
             try
             {
-                AddBurn(burns, vehicle, burn, target, now, ref stage);
+                AddBurn(burns, vehicle, burn, target, now);
             }
             catch (Exception e)
             {
                 // Without it, rather than no lines at all (its node holds on its last anchor).
-                LogBurnFailure(burn, target, now, stage, e);
+                if (BurnFailures.Add($"{e.GetType().Name}: {e.Message}"))
+                {
+                    Log.Warn($"[predict] burn {Describe(burn, now)} left out of the plan: {e}");
+                }
             }
         }
         burns.Sort((a, b) => a.Impulse.CompareTo(b.Impulse));
         return burns.ToArray();
     }
 
-    // Each burn's last failure logged, and how often it failed the same way since. Main thread.
-    private static readonly ConditionalWeakTable<Burn, StrongBox<(string Key, int Repeats)>> BurnFailures = new();
-
-    // A burn left out of the plan, logged with its failing step whenever the burn, step or error changes; repeats counted.
-    private static void LogBurnFailure(Burn burn, BurnTarget? target, double now, string stage, Exception e)
-    {
-        string key = $"{burn.Time.Nanoseconds} {burn.DeltaVVlf} {stage} {e.GetType().Name}";
-        var last = BurnFailures.GetValue(burn, _ => new(("", 0)));
-        if (last.Value.Key == key)
-        {
-            last.Value.Repeats++;
-            return;
-        }
-        string repeats = last.Value.Repeats > 0 ? $"; its previous failure repeated {last.Value.Repeats} more times" : "";
-        last.Value = (key, 0);
-        string Safe(Func<string> text)
-        {
-            try { return text(); } catch (Exception inner) { return $"unavailable ({inner.GetType().Name})"; }
-        }
-        string Hours(UniverseTime t) => Safe(() => $"{(GameTime.ToSecondsSinceJ2000(t) - now) / 3600:F3} h ({t.Nanoseconds} ns)");
-        string targetText = target == null
-            ? "no flight-computer target"
-            : Safe(() => $"flight-computer target: impulse {Hours(target.ImpulsiveInstant)}" +
-                         $"{(target.ImpulsiveInstant == burn.ImpulseTime ? " (this burn's)" : "")}, " +
-                         $"{(target.StartedAt.HasValue ? "being flown" : "not started")}, ignition {Hours(target.IgnitionTime)}, " +
-                         $"Δv target {target.DeltaVTargetCci}, to go {target.DeltaVToGoCci}");
-        string anchor = BurnAnchor.Cached(burn) is { } a
-            ? $"its node holds on its anchor at {(a.Time - now) / 3600:F3} h about {a.Parent.Id}"
-            : "it has no anchor";
-        Log.Warn($"[predict] burn {Describe(burn, now)} left out of the plan, failing at \"{stage}\"; " +
-                 $"time {Hours(burn.Time)}, impulse {Hours(burn.ImpulseTime)}; {targetText}; {anchor}{repeats}: {e}");
-    }
+    private static readonly HashSet<string> BurnFailures = new();  // Each kind logged once. Main thread.
 
     private static string Describe(Burn burn, double now)
     {
@@ -254,21 +224,14 @@ internal static class Predictor
         return text;
     }
 
-    // Not optimized, so a failure's trace names the KSA call and `stage` the step (a rare divide by zero: hyperbolic, Δv ≈ 0).
-    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
-    private static void AddBurn(List<PlannedBurn> burns, Vehicle vehicle, Burn burn, BurnTarget? target, double now,
-                                ref string stage)
+    private static void AddBurn(List<PlannedBurn> burns, Vehicle vehicle, Burn burn, BurnTarget? target, double now)
     {
-        stage = "ParentDepartureBurn";
         if (burn.ParentDepartureBurn)
         {
             // As KSA previews it until it is made a vessel burn: on the vessel's path at ParentDepartureTime.
-            stage = "departure: ParentDepartureTime";
             double departure = GameTime.ToSecondsSinceJ2000(burn.ParentDepartureTime);
-            stage = "departure: FlightPlan.TryFindPatch";
             if (departure > now && vehicle.FlightPlan.TryFindPatch(burn.ParentDepartureTime) is { } own)
             {
-                stage = "departure: state and direction";
                 StateVectors state = own.Orbit.GetStateVectorsAt(burn.ParentDepartureTime);
                 double3 along = burn.DeltaVVlf.Transform(state.GetVlf2ParentCci().OrIdentity())
                     .Transform(own.Orbit.Parent.GetCci2Cce());
@@ -279,19 +242,14 @@ internal static class Predictor
             }
             return;
         }
-        stage = "ImpulseTime";
         double impulse = GameTime.ToSecondsSinceJ2000(burn.ImpulseTime);
-        stage = "Patch";
         PatchedConic patch = burn.Patch;
-        stage = "parent's Cci axes";
         doubleQuat cci2Cce = patch.Orbit.Parent.GetCci2Cce();
-        stage = "matching the flight-computer target";
         if (target != null && target.ImpulsiveInstant == burn.ImpulseTime)
         {
             if (target.StartedAt.HasValue)
             {
                 // Being flown: the rest of it, from now.
-                stage = "target: Δv to go";
                 float3 toGo = target.DeltaVToGoCci;
                 double3 toGoCce = new double3(toGo.X, toGo.Y, toGo.Z).Transform(cci2Cce);
                 if (toGoCce.Length() > 1e-3)
@@ -300,7 +258,6 @@ internal static class Predictor
                 }
                 return;
             }
-            stage = "target: Δv and ignition";
             float3 dv = target.DeltaVTargetCci;
             // A target loaded while the burn had no Δv keeps none inside the alignment window: plan the burn itself.
             if (dv.Length() > 0)
@@ -315,11 +272,8 @@ internal static class Predictor
         {
             return;
         }
-        stage = "patch state at the impulse (GetStateVectorsAt)";
         StateVectors at = patch.Orbit.GetStateVectorsAt(burn.ImpulseTime);
-        stage = "burn axes (GetVlf2ParentCci)";
         double3 direction = burn.DeltaVVlf.Transform(at.GetVlf2ParentCci().OrIdentity()).Transform(cci2Cce);
-        stage = "parent index and adding";
         int parentIndex = patch.Orbit.Parent is Astronomical parentBody &&
                           PrincipiaSystem.Current?.IndexOf(parentBody) is int index ? index : -1;
         burns.Add(new PlannedBurn(impulse, null, burn.DeltaVVlf.Length(), direction.Normalized(),
