@@ -203,7 +203,7 @@ internal static unsafe partial class Native
 
     [LibraryImport(LibraryName, EntryPoint = "principia_ksa__FlowMassless")]
     public static partial Status FlowMassless(IntPtr ephemeris, in QP initial, double t0, double t1,
-                                              out QP finalState);
+                                              double lengthTolerance, double speedTolerance, out QP finalState);
 
     [LibraryImport(LibraryName, EntryPoint = "principia_ksa__Predict")]
     public static partial Status Predict(IntPtr ephemeris, in QP initial, double t0, double tEnd, long maxSteps,

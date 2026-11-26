@@ -36,6 +36,8 @@
     <Reference Include="Brutal.Strings" HintPath="$(KsaDir)/Brutal.Strings.dll" Private="false" />
     <!-- KeyHash (vehicle ids) lives here. -->
     <Reference Include="Planet.Render.Core" HintPath="$(KsaDir)/Planet.Render.Core.dll" Private="false" />
+    <!-- MemoryOwner, for KSA's orbit line points. -->
+    <Reference Include="CommunityToolkit.HighPerformance" HintPath="$(KsaDir)/CommunityToolkit.HighPerformance.dll" Private="false" />
     <Reference Include="StarMap.API" HintPath="$(StarMapDir)/StarMap.API.dll" Private="false" />
     <!-- Harmony's API, to compile against; StarMap ships its own 0Harmony.dll
          (2.4.3 in StarMap 0.5.4), which the mod runs with. -->

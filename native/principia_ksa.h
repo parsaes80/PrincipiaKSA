@@ -175,8 +175,9 @@ principia_ksa__EphemerisRelativeAcceleration(
     principia_ksa_XYZ* acceleration);
 
 // Integrates a massless body (a vessel) from `initial` at `t0` to `t1` in the
-// gravitational field of the ephemeris, with Principia's KSP settings for
-// vessel histories (Dormand–El-Mikkawy–Prince RKN 4(3)FM, 1 mm, 1 mm/s).
+// gravitational field of the ephemeris, with Principia's integrator for vessel
+// histories (Dormand–El-Mikkawy–Prince RKN 4(3)FM) at `length_tolerance` (m)
+// and `speed_tolerance` (m/s); Principia's KSP plugin uses 1 mm and 1 mm/s.
 // Both times must be in [t_min, t_max] and t1 ≥ t0. Fails (status 3) if the
 // body hits a massive body or the integration can't reach t1.
 PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__FlowMassless(
@@ -184,6 +185,8 @@ PRINCIPIA_KSA_API principia_ksa_Status principia_ksa__FlowMassless(
     principia_ksa_QP const* initial,
     double t0,
     double t1,
+    double length_tolerance,
+    double speed_tolerance,
     principia_ksa_QP* final_state);
 
 // Why a prediction ended.

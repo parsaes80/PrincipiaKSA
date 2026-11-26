@@ -775,6 +775,8 @@ principia_ksa_Status principia_ksa__FlowMassless(
     principia_ksa_QP const* const initial,
     double const t0,
     double const t1,
+    double const length_tolerance,
+    double const speed_tolerance,
     principia_ksa_QP* const final_state) {
   PRINCIPIA_KSA_TRY
   Urgent const urgent(ephemeris);  // The game waits on it.
@@ -783,6 +785,10 @@ principia_ksa_Status principia_ksa__FlowMassless(
   }
   if (!Finite(initial->q) || !Finite(initial->p)) {
     return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "state is not finite");
+  }
+  if (!Finite(length_tolerance) || !(length_tolerance > 0) ||
+      !Finite(speed_tolerance) || !(speed_tolerance > 0)) {
+    return Fail(PRINCIPIA_KSA_INVALID_ARGUMENT, "tolerances must be > 0");
   }
   for (double const t : {t0, t1}) {
     if (auto const status = CheckTime(ephemeris, t);
@@ -800,11 +806,11 @@ principia_ksa_Status principia_ksa__FlowMassless(
   }
   // As Principia's DefaultPsychohistoryParameters, bounded so a pathological
   // orbit can't hang a thread.
-  static Ephemeris<Frame>::AdaptiveStepParameters const parameters(
+  Ephemeris<Frame>::AdaptiveStepParameters const parameters(
       MonotonicIntegrator::Get(),
       /*max_steps=*/1'000'000,
-      /*length_integration_tolerance=*/1 * Milli(Metre),
-      /*speed_integration_tolerance=*/1 * Milli(Metre) / Second);
+      length_tolerance * Metre,
+      speed_tolerance * Metre / Second);
   DiscreteTrajectory<Frame> trajectory;
   absl::Status status = trajectory.Append(
       ToInstant(t0),

@@ -385,8 +385,8 @@ int main(int argc, char** argv) {
                           earth0.p.z + v * std::sin(i)}};
     principia_ksa_QP after;
     auto const start = std::chrono::steady_clock::now();
-    Expect(principia_ksa__FlowMassless(e, &iss, t0, t0 + 86400, &after) ==
-               PRINCIPIA_KSA_OK,
+    Expect(principia_ksa__FlowMassless(e, &iss, t0, t0 + 86400, 1e-3, 1e-3,
+                                       &after) == PRINCIPIA_KSA_OK,
            "FlowMassless for a day in LEO");
     double const ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - start).count();
@@ -399,6 +399,21 @@ int main(int argc, char** argv) {
                 "(J2 theory for the ISS orbit: ≈ −5.0°/day)\n",
                 ms, Norm(q) / 1000, node);
     Expect(node < -4.5 && node > -5.5, "nodal regression from Earth's J2");
+    // The game loosens the tolerance for long steps (high warp): 1 m is
+    // several times faster, and stays within ~50 m of 1 mm after a day.
+    principia_ksa_QP loose;
+    auto const loose_start = std::chrono::steady_clock::now();
+    Expect(principia_ksa__FlowMassless(e, &iss, t0, t0 + 86400, 1, 1, &loose) ==
+               PRINCIPIA_KSA_OK,
+           "FlowMassless for a day in LEO at 1 m");
+    double const loose_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - loose_start).count();
+    double const apart = Norm(Minus(loose.q, after.q));
+    std::printf("  at 1 m: %.1f ms, %.1f m from the 1 mm flow\n", loose_ms, apart);
+    Expect(apart < 500 && loose_ms < ms, "a looser tolerance: faster, and close");
+    Expect(principia_ksa__FlowMassless(e, &iss, t0, t0 + 60, 0, 1e-3, &loose) ==
+               PRINCIPIA_KSA_INVALID_ARGUMENT,
+           "a zero tolerance → INVALID_ARGUMENT");
     // At this instant Earth's spin half-angle takes the slow path of
     // Principia's sin and cos (CORE-MATH), which in the first Windows build
     // returned a sine of 64 and a field of 1.7e15 m/s².
@@ -410,7 +425,7 @@ int main(int argc, char** argv) {
                e, 1, slow, 817735935.6740061, &g_slow) == PRINCIPIA_KSA_OK &&
                std::fabs(Norm(g_slow) - 8.7147) < 1e-3,
            "Earth's field where sin and cos take their slow path");
-    Expect(principia_ksa__FlowMassless(e, &iss, t0 + 10, t0, &after) ==
+    Expect(principia_ksa__FlowMassless(e, &iss, t0 + 10, t0, 1e-3, 1e-3, &after) ==
                PRINCIPIA_KSA_INVALID_ARGUMENT,
            "t1 before t0 → INVALID_ARGUMENT (not a CHECK abort)");
 
@@ -532,7 +547,7 @@ int main(int argc, char** argv) {
       // integration error.
       {
         principia_ksa_QP later;
-        principia_ksa__FlowMassless(e, &iss, t0, t0 + 30, &later);
+        principia_ksa__FlowMassless(e, &iss, t0, t0 + 30, 1e-3, 1e-3, &later);
         Prediction const a = Predict(e, &iss, t0, t0 + 86400, 100000, 0, {1});
         Prediction const b =
             Predict(e, &later, t0 + 30, t0 + 30 + 86400, 100000, 0, {1});
@@ -634,8 +649,8 @@ int main(int argc, char** argv) {
     principia_ksa__EphemerisProlong(e, t0 + 86400);
     double const r = 1.7374e6 + 20e3, v = std::sqrt(4.9048695e12 / r);
     principia_ksa_QP llo{{3.844e8 + r, 0, 0}, {0, 1022 + v, 0}}, after;
-    Expect(principia_ksa__FlowMassless(e, &llo, t0, t0 + 3 * 3600, &after) ==
-                   PRINCIPIA_KSA_OK &&
+    Expect(principia_ksa__FlowMassless(e, &llo, t0, t0 + 3 * 3600, 1e-3, 1e-3,
+                                       &after) == PRINCIPIA_KSA_OK &&
                Predict(e, &llo, t0, t0 + 3 * 3600, 10000).status ==
                    PRINCIPIA_KSA_OK,
            "20 km lunar orbit with the Moon's field (no degree-31 abort)");
@@ -658,7 +673,7 @@ int main(int argc, char** argv) {
     bool ok = true;
     for (int i = 0; i < 50'000 && ok; ++i) {
       ok = principia_ksa__FlowMassless(e, &leo, far, far + 1500 + i * 0.0137,
-                                       &after) == PRINCIPIA_KSA_OK;
+                                       1e-3, 1e-3, &after) == PRINCIPIA_KSA_OK;
     }
     for (int i = 0; i < 20'000 && ok; ++i) {
       Prediction const p = Predict(e, &leo, far, far + 1500 + i * 0.0137, 10000);
@@ -711,7 +726,7 @@ int main(int argc, char** argv) {
       auto const r2 = std::chrono::steady_clock::now();
       // A vessel's step and its thrust gravity, as on KSA's job threads.
       principia_ksa_QP after;
-      principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, &after);
+      principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, 1e-3, 1e-3, &after);
       auto const r3 = std::chrono::steady_clock::now();
       principia_ksa_XYZ g;
       principia_ksa__EphemerisRelativeAcceleration(e, 1, {r_leo, 0, 0}, t0, &g);
@@ -778,7 +793,8 @@ int main(int argc, char** argv) {
     while (!done) {
       auto const c0 = std::chrono::steady_clock::now();
       principia_ksa_QP after;
-      ok &= principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, &after) == PRINCIPIA_KSA_OK;
+      ok &= principia_ksa__FlowMassless(e, &leo, t0, t0 + 1, 1e-3, 1e-3,
+                                        &after) == PRINCIPIA_KSA_OK;
       auto const c1 = std::chrono::steady_clock::now();
       principia_ksa_XYZ g;
       ok &= principia_ksa__EphemerisRelativeAcceleration(e, 1, {r, 0, 0}, t0, &g) ==

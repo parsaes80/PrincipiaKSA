@@ -105,10 +105,11 @@ internal sealed class Ephemeris : IDisposable
         return a;
     }
 
-    public QP FlowMassless(in QP initial, double t0, double t1)
+    // Tolerance in m and m/s; Principia's vessel histories use 1 mm.
+    public QP FlowMassless(in QP initial, double t0, double t1, double tolerance = 1e-3)
     {
         using var profiled = FrameProfiler.NativeFlow.Measure();
-        Native.Check(Native.FlowMassless(Handle, in initial, t0, t1, out QP final));
+        Native.Check(Native.FlowMassless(Handle, in initial, t0, t1, tolerance, tolerance, out QP final));
         return final;
     }
 

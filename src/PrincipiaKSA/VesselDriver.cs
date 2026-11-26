@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Brutal.Numerics;
+using CommunityToolkit.HighPerformance.Buffers;
 using HarmonyLib;
 using KSA;
 
@@ -16,6 +18,7 @@ internal static class VesselDriver
     {
         public QP State;        // Absolute, barycentric, at Time.
         public Int128 TimeNs = Int128.MinValue;
+        public long PointsDrawn;  // Stopwatch ticks.
     }
 
     private static readonly ConditionalWeakTable<Vehicle, Track> Tracks = new();
@@ -63,7 +66,9 @@ internal static class VesselDriver
                 Interlocked.Increment(ref Resyncs);
             }
 
-            QP next = ephemeris.FlowMassless(in track.State, s0, s1);
+            // 1 mm per minute of step, up to 1 m: a long step (high warp) costs several times less, ~50 m a day off in
+            // low orbit.
+            QP next = ephemeris.FlowMassless(in track.State, s0, s1, Math.Clamp((s1 - s0) / 60 * 1e-3, 1e-3, 1));
             Interlocked.Increment(ref Flows);
             track.State = next;
             track.TimeNs = nextTime.Nanoseconds;
@@ -80,7 +85,7 @@ internal static class VesselDriver
             if (drift > Math.Max(1.0, 1e-7 * q.Length()) || velocityDrift > 0.01)
             {
                 Orbit fresh = Orbit.CreateFromStateCci(parent, nextTime, q, v, vehicle.OrbitColor);
-                vehicleState.SetCurrentOrbit(fresh, vehicle.Hash);
+                SetOrbit(vehicleState, fresh, track);
                 Interlocked.Increment(ref Rebuilds);
             }
         }
@@ -94,6 +99,46 @@ internal static class VesselDriver
         {
             system.Exit();
         }
+    }
+
+    private static readonly long PointsInterval = Stopwatch.Frequency / 2;
+
+    // SetCurrentOrbit makes KSA plan the vessel anew, as after a burn: its whole trajectory, encounters, impacts and
+    // line points, at every correction. A plan of one final patch instead gets the orbit in a copy that keeps its
+    // verification (KSA re-verifies it at its expiry as usual) and its line points, redrawn at most twice a second.
+    private static void SetOrbit(VehicleUpdateState state, Orbit fresh, Track track)
+    {
+        FlightPlan plan = state.CurrentFlightPlan;
+        if (state.IsControlled || !plan.IsComplete || plan.ImpactSearchUnresolved || !plan.HasCachedPoints ||
+            plan.Patches is not [{ EndTransition: PatchTransition.Final } patch])
+        {
+            state.SetCurrentOrbit(fresh, state.ReadOnlyVehicle.Hash);
+            return;
+        }
+        bool staged = state.UpdateData.NewFlightPlan != null;  // Then the plan and its orbits are this step's own.
+        FlightPlan copy = staged ? plan : new FlightPlan(plan);
+        Orbit old = patch.Orbit;
+        PatchedConic first = copy.Patches[0];
+        fresh.OrbitLineColor = old.OrbitLineColor;
+        first.Orbit = fresh;
+        long now = Stopwatch.GetTimestamp();
+        if (old.CachedPoints.Length == 0 || now - track.PointsDrawn > PointsInterval)
+        {
+            fresh.UpdateCachedPoints(UpdateTaskUtils.GenerateSpacedPoints(first));
+            track.PointsDrawn = now;
+        }
+        else
+        {
+            var points = MemoryOwner<OrbitPointCce>.Allocate(old.CachedPoints.Length);
+            old.CachedPoints.CopyTo(points.Span);
+            fresh.UpdateCachedPoints(points);
+        }
+        if (staged)
+        {
+            old.ReleaseCachedPoints();
+        }
+        state.UpdateData.NewStateVectors = null;
+        state.UpdateData.NewFlightPlan = copy;
     }
 
     // Between jobs the track is a step ahead of KSA's state, so it is accepted up to an hour after `notBeforeNs`.
