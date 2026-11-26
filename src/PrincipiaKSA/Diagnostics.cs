@@ -12,6 +12,7 @@ internal static class Diagnostics
     private static long _next;
     private static long _lastStates, _lastRefreshes;
     private static long _lastFlows, _lastFullPhysicsFlows, _lastRebuilds, _lastResyncs, _lastCorrections;
+    private static long _lastPredictions, _lastPlans;
 
     public static void Tick()
     {
@@ -52,6 +53,10 @@ internal static class Diagnostics
                      $"({fullPhysicsFlows - _lastFullPhysicsFlows} within KSA's full-physics steps), " +
                      $"{rebuilds - _lastRebuilds} conics rebuilt, {resyncs - _lastResyncs} resyncs from KSA, " +
                      $"{corrections - _lastCorrections} physics gravity corrections");
+            long predictions = Predictor.PredictionsComputed, plans = Predictor.PlansComputed;
+            Log.Info($"[status] lines: {predictions - _lastPredictions} predictions and {plans - _lastPlans} flight plans " +
+                     $"computed");
+            (_lastPredictions, _lastPlans) = (predictions, plans);
             (_lastFlows, _lastFullPhysicsFlows, _lastRebuilds, _lastResyncs, _lastCorrections) =
                 (flows, fullPhysicsFlows, rebuilds, resyncs, corrections);
 

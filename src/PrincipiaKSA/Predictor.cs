@@ -28,6 +28,10 @@ internal static class Predictor
     private static string? _snapshotError;
     public static string? LastError => _snapshotError ?? CoastWorker.Error ?? PlanWorker.Error;
 
+    // For the status log.
+    public static long PredictionsComputed => Interlocked.Read(ref CoastWorker.Computed);
+    public static long PlansComputed => Interlocked.Read(ref PlanWorker.Computed);
+
     public static void Start()
     {
         _stop = false;
@@ -102,6 +106,9 @@ internal static class Predictor
     private sealed record NodeBurn(Burn Burn, double Time, double Window);
 
     private static readonly long MinInterval = Stopwatch.Frequency / 120;
+    // Coasting with nothing changed gives the same path again; the map draws only what is ahead of now.
+    private static readonly long IdleInterval = Stopwatch.Frequency / 2;
+    private static int _lastInputs;
 
     // Main thread, once per frame. Never throws.
     public static void Tick()
@@ -144,6 +151,14 @@ internal static class Predictor
             Clear();
             return;
         }
+        int inputs = Inputs(vehicle, frame);
+        bool growing = Latest is { AwaitingPlanets: true } || LatestPlan is { AwaitingPlanets: true };
+        if (inputs == _lastInputs && vehicle.Situation == Situation.Freefall && !growing &&
+            now - _lastRequest < IdleInterval)
+        {
+            return;
+        }
+        _lastInputs = inputs;
         _lastRequest = now;
         StateVectors sv = orbit.StateVectors;
         double t = GameTime.ToSecondsSinceJ2000(sv.StateTime);
@@ -171,6 +186,29 @@ internal static class Predictor
             parentIndex, parent, PlaneOf(system, vehicle)));
         CoastWorker.Wake();
         PlanWorker.Wake();
+    }
+
+    // What the lines depend on besides the vessel's own motion: any change asks for them at once.
+    private static int Inputs(Vehicle vehicle, FrameSpec frame)
+    {
+        var hash = new HashCode();
+        hash.Add(vehicle);
+        hash.Add(vehicle.Orbit.Parent);
+        hash.Add(frame);
+        hash.Add(vehicle.Target);
+        hash.Add((Settings.ShowPrediction, Settings.ShowFlightPlan, Settings.PredictionSteps,
+                  Settings.PredictionTolerance, Settings.PlanSteps, Settings.PlanTolerance));
+        foreach (Burn burn in vehicle.BurnPlan.All())
+        {
+            hash.Add((burn.Time.Nanoseconds, burn.DeltaVVlf.X, burn.DeltaVVlf.Y, burn.DeltaVVlf.Z));
+        }
+        FlightComputer fc = vehicle.FlightComputer;
+        if (fc.Burn is { } target)
+        {
+            hash.Add((target.ImpulsiveInstant.Nanoseconds, target.StartedAt.HasValue));
+        }
+        hash.Add(Math.Round(Math.Log(Math.Max(fc.TotalMassPropsBody.Mass, 1e-9)) * 1000));  // To 0.1%: life support.
+        return hash.ToHashCode();
     }
 
     // Still ahead or being flown, along the flight computer's target, else the burn's (anchored) patch.
@@ -374,6 +412,7 @@ internal static class Predictor
 
         // Until it next succeeds.
         public string? Error;
+        public long Computed;
 
         public void Start()
         {
@@ -421,6 +460,7 @@ internal static class Predictor
                                          Stopwatch.GetElapsedTime(request.Requested, started).TotalMilliseconds,
                                          result);
                     Error = null;
+                    Interlocked.Increment(ref Computed);
                 }
                 catch (Exception e)
                 {
